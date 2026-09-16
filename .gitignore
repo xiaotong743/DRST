@@ -1,0 +1,15 @@
+# Upstream Proteina clone (656 MB, own git repo at github.com/xiaotong743/proteina).
+# Our changes to it are captured in proteina-local.patch; see README.
+proteina/
+
+# Regenerable: `scratch/run.py configs/simulation.yaml <stage>`
+scratch/out/
+scratch/trained_flow_*.pt
+
+# Third-party paper content, not ours to redistribute
+scratch/ref/
+
+__pycache__/
+.pytest_cache/
+*.egg-info/
+*.pyc

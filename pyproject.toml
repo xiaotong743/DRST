@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "drst-steering"
+version = "0.1.0"
+description = "Mean-field distributional steering for flow/diffusion samplers"
+requires-python = ">=3.11"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+packages = ["steering"]
+
+[tool.pytest.ini_options]
+markers = ["slow: multi-minute end-to-end claims (run with -m slow)",
+           "gpu: needs a GPU and the Proteina checkpoint (run with -m gpu)"]
+addopts = "-m 'not slow and not gpu'"

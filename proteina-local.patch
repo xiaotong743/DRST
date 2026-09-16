@@ -1,0 +1,55 @@
+diff --git a/configs/experiment_config/inference_base.yaml b/configs/experiment_config/inference_base.yaml
+index 1d6efb3..4456cbd 100644
+--- a/configs/experiment_config/inference_base.yaml
++++ b/configs/experiment_config/inference_base.yaml
+@@ -1,5 +1,5 @@
+ run_name_:
+-ckpt_path: "path/to/checkpoints/directory"
++ckpt_path: "/lustre/groups/ml01/workspace/xiaotong.fu/playground/proteina_data/ckpts"
+ ckpt_name: 
+ 
+ ncpus_: 24
+diff --git a/configs/experiment_config/inference_fid_ca.yaml b/configs/experiment_config/inference_fid_ca.yaml
+index c34ea85..8dbf8c5 100644
+--- a/configs/experiment_config/inference_fid_ca.yaml
++++ b/configs/experiment_config/inference_fid_ca.yaml
+@@ -1,5 +1,5 @@
+ defaults:
+-  - inference_ucond_200m_notri
++  - inference_ucond_200m_tri
+   - _self_
+ 
+ # Lengths to sample. Uses `nres_lens` if specified, otherwise arange(min_len, max_len+1, step)
+--- added files ---
+=== configs/experiment_config/inference_fid_s0.yaml
+# Shard 0/4 of inference_fid_ca (gpu_normal caps at 24h; pooled with script_utils/inference_fid.py).
+defaults:
+  - inference_fid_ca
+  - _self_
+
+run_name_: fid_200M_tri_s0
+nres_lens: [60, 80, 100, 120, 140, 160, 180, 200, 220, 240]
+=== configs/experiment_config/inference_fid_s1.yaml
+# Shard 1/4 of inference_fid_ca (gpu_normal caps at 24h; pooled with script_utils/inference_fid.py).
+defaults:
+  - inference_fid_ca
+  - _self_
+
+run_name_: fid_200M_tri_s1
+nres_lens: [65, 85, 105, 125, 145, 165, 185, 205, 225, 245]
+=== configs/experiment_config/inference_fid_s2.yaml
+# Shard 2/4 of inference_fid_ca (gpu_normal caps at 24h; pooled with script_utils/inference_fid.py).
+defaults:
+  - inference_fid_ca
+  - _self_
+
+run_name_: fid_200M_tri_s2
+nres_lens: [70, 90, 110, 130, 150, 170, 190, 210, 230, 250]
+=== configs/experiment_config/inference_fid_s3.yaml
+# Shard 3/4 of inference_fid_ca (gpu_normal caps at 24h; pooled with script_utils/inference_fid.py).
+defaults:
+  - inference_fid_ca
+  - _self_
+
+run_name_: fid_200M_tri_s3
+nres_lens: [75, 95, 115, 135, 155, 175, 195, 215, 235, 255]

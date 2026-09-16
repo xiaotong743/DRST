@@ -1,0 +1,1 @@
+So the paper's "standard gradient steering" baseline puts a bare coefficient on ∇ψ(x̂₁) — no ε_t, no α(t)=t annealing — which is the guidance-scale convention of the works they cite (Corso et al., Sani et al.), not eq (11) as printed. Integrated over t that is exactly the 4× I estimated: ∫1 dt / ∫ε_t·t dt = 1/(0.5·0.5).

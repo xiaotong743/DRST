@@ -1,0 +1,21 @@
+# Phase 2 and the binning diagnostic, on the frozen Proteina checkpoint.
+torch_dtype: float64
+out_dir: scratch/out
+ckpt: /lustre/groups/ml01/workspace/xiaotong.fu/playground/proteina_data/ckpts/proteina_v1.1_DFS_200M_tri.ckpt
+data_path: /lustre/groups/ml01/workspace/xiaotong.fu/playground/proteina_data
+
+n: 32                   # 1.14 GB/particle at length 128; N=64 OOMs on 80 GB
+n_res: 64
+steps: 100
+
+gt_mode: us
+gt_p: 1.0
+gt_clamp_val: 10.0      # load-bearing: unclamped, eps(0)=100 and CA-CA breaks to 15.1 A
+vf_tail_t: 0.99         # full_simulation flips to the ODE at t > 0.99, stickily
+
+lams: [1.0, 2.0, 3.0, 5.0, 10.0, 30.0, 100.0]   # SNIS reference degenerates past lam*sd(r) ~ 1
+pool_batches: 24
+steer: 1                # 0 = weights only, isolating the gradient's contribution
+
+lam: 1.0                                        # binning diagnostic
+ts: [0.2, 0.4, 0.6, 0.8, 0.95]
