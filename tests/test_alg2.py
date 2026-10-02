@@ -6,10 +6,10 @@ import math
 import pytest
 import torch
 
-from dataclasses import replace
 
-from steering.sde import steer, multibatch, Config, Pointwise, MMD
-from steering.toy import GaussianMixtureFlow, grid_mu_star, sample_grid, w1_to_grid
+from steering.rewards import Pointwise, MMD
+from steering.steerer import steer, multibatch, Config
+from toy import GaussianMixtureFlow, grid_mu_star, w1_to_grid
 
 torch.set_default_dtype(torch.float64)
 SD, H = 0.5, 5.0 * math.sqrt(2.0)

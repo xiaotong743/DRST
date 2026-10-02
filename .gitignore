@@ -2,12 +2,13 @@
 # Our changes to it are captured in proteina-local.patch; see README.
 proteina/
 
-# Regenerable: `scratch/run.py configs/simulation.yaml <stage>`
-scratch/out/
-scratch/trained_flow_*.pt
+# Regenerable: `experiments/run.py configs/simulation.yaml <stage>`
+experiments/out/
+experiments/trained_flow_*.pt
+CLAUDE.md
 
 # Third-party paper content, not ours to redistribute
-scratch/ref/
+experiments/ref/
 
 __pycache__/
 .pytest_cache/

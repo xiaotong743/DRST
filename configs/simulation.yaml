@@ -1,7 +1,8 @@
 # arXiv:2608.08770 section 4.1. Derivations for sd, h and p04_range are in the plan file.
 torch_dtype: float64
-out_dir: scratch/out
-ckpt: scratch/trained_flow_sd0.5.pt
+device: cpu            # "cuda" for the sweeps; the bitwise gate must stay cpu
+out_dir: experiments/out
+ckpt: experiments/trained_flow_sd0.5.pt
 
 sd: 0.5                 # "unit variance" is the mixture's: sd^2 + 0.75 = 1
 means: [-1.0, 1.0]

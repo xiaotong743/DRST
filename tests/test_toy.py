@@ -6,8 +6,9 @@ import pytest
 import torch
 from scipy import stats
 
-from steering.sde import steer, Config, Pointwise, MMD
-from steering.toy import GaussianMixtureFlow, grid_mu_star, objective
+from steering.rewards import Pointwise, MMD
+from steering.steerer import steer, Config
+from toy import GaussianMixtureFlow, grid_mu_star
 
 torch.set_default_dtype(torch.float64)
 
@@ -78,7 +79,7 @@ def test_lambda_star_claim():
     distance to mu* coincides with lam* for the mean-field sampler, and does not for
     gradient-only.
     """
-    from steering.toy import grid_mu_star, sample_grid, w1_to_grid
+    from toy import grid_mu_star, sample_grid, w1_to_grid
     SD, H, LAM_STAR, N, STEPS = 0.5, 5.0 * math.sqrt(2.0), 10.0, 3000, 100
     paper = dict(means=(-1.0, 1.0), stds=(SD, SD), weights=(1.0, 3.0))
     m = GaussianMixtureFlow(eps_mode="const", eps_clamp=20.0, **paper)

@@ -80,10 +80,25 @@ class GaussianMixtureFlow:
         return (self.m[k] + self.s[k] * torch.randn(n, generator=generator, dtype=self.dtype))
 
 
+def grid_tempered(model, tau, grid=None, reward=None, eta=0.0):
+    """mu ∝ p1^(1/tau) exp(eta * r) on a grid: experiment B's terminal target for a POINTWISE
+    reward, exact up to the grid spacing. Returns (grid, density).
+
+    Only p1 appears, not p_t, because alpha(1) = 1 and the tilt is evaluated at the endpoint --
+    so this reference needs no time-marginal and no fixed point, unlike `grid_mu_star`.
+    """
+    if grid is None:
+        grid = torch.linspace(-8, 8, 3201, dtype=model.dtype)
+    log_q = model.log_p1(grid) / tau
+    if reward is not None and eta != 0.0:
+        log_q = log_q + eta * reward(grid.reshape(-1, 1)).reshape(-1)
+    return grid, torch.softmax(log_q, dim=0)
+
+
 def grid_mu_star(model, target, lam, h, grid=None, iters=2000, damp=0.5):
     """Solve mu ∝ p1 exp(Psi(., mu)) on a grid, where Psi = lam * psi and psi is the MMD first
     variation. Returns (grid, density). Provides absolute ground truth for the toy tests."""
-    from .mmd import rbf_gram
+    from steering.rewards import rbf_gram
     if grid is None:
         grid = torch.linspace(-6, 6, 1201, dtype=model.dtype)
     logp1 = model.log_p1(grid)
@@ -109,7 +124,7 @@ def objective(samples, weights, model, target, lam, h, kl_bw=0.2):
     KL is estimated by a kernel-density plug-in on the weighted particle cloud, matching the
     leave-one-out style estimator the paper used for the low-dimensional experiments.
     """
-    from .mmd import mmd2, rbf_gram
+    from steering.rewards import mmd2, rbf_gram
     s = samples.reshape(-1, 1)
     m2 = mmd2(s, target, h, wx=weights.to(s.dtype))
     k = rbf_gram(s, s, kl_bw * (2 ** 0.5))
@@ -158,7 +173,7 @@ def kl_loo(samples, weights, model, bw=0.2):
 
 def objective_paper(samples, weights, model, target, lam_star, h_reward, kl_bw=0.2):
     """J(mu) = lam* MMD^2(mu, nu) + KL(mu || p1)  (paper C.1.1)."""
-    from .mmd import mmd2
+    from steering.rewards import mmd2
     s = samples.reshape(-1, 1)
     w = weights.reshape(-1).to(s.dtype)
     w = w / w.sum()
@@ -190,7 +205,7 @@ class TrainedFlow(torch.nn.Module):
         return torch.cat([x, tt, torch.cos(math.pi * tt)], dim=-1)
 
     def fit(self, steps=6000, batch=4096, lr=2e-3, seed=0, verbose=False):
-        g = torch.Generator().manual_seed(seed)
+        g = torch.Generator(device=torch.get_default_device()).manual_seed(seed)
         opt = torch.optim.Adam(self.net.parameters(), lr=lr)
         sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, steps)
         for i in range(steps):

@@ -1,0 +1,40 @@
+# Experiment A: reward steering at Proteina's own temperature. No temperature FK term.
+torch_dtype: float32
+out_dir: experiments/out
+ckpt: /lustre/groups/ml01/workspace/xiaotong.fu/playground/proteina_data/ckpts/proteina_v1.1_DFS_200M_tri.ckpt
+data_path: /lustre/groups/ml01/workspace/xiaotong.fu/playground/proteina_data
+
+# The published Table-1 sampler. gamma == sc_scale_noise == Config.temperature.
+gt_mode: "1/t"
+gt_p: 1.0
+gt_clamp_val: null
+vf_tail_t: 0.99
+steps: 400
+temperature: 0.45
+
+n: 100            # the paper's samples per length
+n_res: 64
+seed: 7
+eta: 5            
+# Length normalisation for eta. **[measured]** authority ~ 1/L, so a fixed eta is a
+# DIFFERENT effective strength at each length. Set to a reference length (e.g. 50) to
+# make eta mean the same thing everywhere: eta_eff = eta * n_res / eta_ref_len.
+# null = raw eta, which is what every result currently on disk used.
+eta_ref_len: null
+k_fp: 3
+damp: 1.0
+endpoint_lag: literal
+resample_every: 25
+grad_chunk: 4     # holds N=100 at every length; exact, the measure is detached
+soft_binning: true
+div_probes: 4
+
+# Reward: smooth CA contact features, bandwidth frozen per length from a native pilot pool.
+min_sep: 4
+cutoff_nm: 0.8
+width_nm: 0.05
+pilot_batches: 2
+h: null           # set by the `calibrate` stage
+# Bandwidth is calibrated at THIS temperature for every run, so all gammas at a length share one
+# reward. Keying the cache on length alone let concurrent gamma jobs read each other's h.
+h_calib_temperature: 0.45

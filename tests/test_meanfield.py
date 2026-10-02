@@ -1,13 +1,14 @@
-"""alg3.py: Algorithm 3, the implicit Psidot solver, against the second variation it claims."""
+"""meanfield.py: Algorithm 3, the implicit Psidot solver, against the second variation it claims."""
 
 import math
 
 import pytest
 import torch
 
-from steering.alg3 import implicit_psidot, psidot_terms
-from steering.sde import steer, Config, Pointwise, MMD
-from steering.toy import GaussianMixtureFlow, grid_mu_star, sample_grid, w1_to_grid
+from steering.meanfield import implicit_psidot, psidot_terms
+from steering.rewards import Pointwise, MMD
+from steering.steerer import steer, Config
+from toy import GaussianMixtureFlow, grid_mu_star, sample_grid, w1_to_grid
 
 torch.set_default_dtype(torch.float64)
 
@@ -35,7 +36,7 @@ def test_phi_tilde_is_the_second_variation():
     w = torch.full((50,), 1.0 / 50)
 
     # (i) against an independent construction from the kernel: sign and factor of 2
-    from steering.mmd import rbf_gram
+    from steering.rewards import rbf_gram
     k = rbf_gram(q, z, pot.h)
     want = -2.0 * (k - (k @ w)[:, None])
     assert torch.allclose(pot.phi_tilde(q, z, w), want, atol=1e-12)
@@ -61,7 +62,7 @@ def test_phi_tilde_is_the_second_variation():
     assert torch.allclose(pot.phi_sum(q, z, w), -2.0 * (k @ w), atol=1e-12)
 
 
-def test_pointwise_second_variation_vanishes_and_alg3_reduces_to_dt_psi():
+def test_pointwise_second_variation_vanishes_and_the_implicit_solver_reduces_to_dt_psi():
     """R(mu) = int r dmu is linear, so Phi == 0, A == I, and psidot == d_t Psi exactly."""
     r = Pointwise(lambda th: th.squeeze(-1) ** 2)
     q = torch.randn(9, 1)
@@ -91,12 +92,14 @@ def test_pointwise_implicit_matches_picard_end_to_end():
 
 def test_implicit_psidot_matches_a_converged_picard_at_the_same_state():
     """The sharp check: Algorithm 3 and a CONVERGED, damped Algorithm 4 must compute the same
-    Psidot at the same cloud. Measured in scratch/alg34_nscale.py, the residual disagreement is
+    Psidot at the same cloud. Measured at the time (in a experiments script since deleted), the
+    residual disagreement is
     finite-N and falls with N (7.2e-3 -> 1.0e-3 relative over 16x N at lam=2), so a few percent
     """
-    from steering.alg3 import implicit_psidot, psidot_terms
-    from steering.ips import picard, normalise
-    from steering.sde import _dot
+    from steering.meanfield import implicit_psidot, psidot_terms
+    from steering.meanfield import picard
+    from steering.smc import normalise
+    from steering.steerer import _dot
 
     m, pot, _ = _setup()
     n, lam, t, dt = 800, 6.0, 0.6, 1e-3

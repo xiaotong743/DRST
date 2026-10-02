@@ -20,36 +20,321 @@ index c34ea85..8dbf8c5 100644
    - _self_
  
  # Lengths to sample. Uses `nres_lens` if specified, otherwise arange(min_len, max_len+1, step)
---- added files ---
-=== configs/experiment_config/inference_fid_s0.yaml
-# Shard 0/4 of inference_fid_ca (gpu_normal caps at 24h; pooled with script_utils/inference_fid.py).
-defaults:
-  - inference_fid_ca
-  - _self_
-
-run_name_: fid_200M_tri_s0
-nres_lens: [60, 80, 100, 120, 140, 160, 180, 200, 220, 240]
-=== configs/experiment_config/inference_fid_s1.yaml
-# Shard 1/4 of inference_fid_ca (gpu_normal caps at 24h; pooled with script_utils/inference_fid.py).
-defaults:
-  - inference_fid_ca
-  - _self_
-
-run_name_: fid_200M_tri_s1
-nres_lens: [65, 85, 105, 125, 145, 165, 185, 205, 225, 245]
-=== configs/experiment_config/inference_fid_s2.yaml
-# Shard 2/4 of inference_fid_ca (gpu_normal caps at 24h; pooled with script_utils/inference_fid.py).
-defaults:
-  - inference_fid_ca
-  - _self_
-
-run_name_: fid_200M_tri_s2
-nres_lens: [70, 90, 110, 130, 150, 170, 190, 210, 230, 250]
-=== configs/experiment_config/inference_fid_s3.yaml
-# Shard 3/4 of inference_fid_ca (gpu_normal caps at 24h; pooled with script_utils/inference_fid.py).
-defaults:
-  - inference_fid_ca
-  - _self_
-
-run_name_: fid_200M_tri_s3
-nres_lens: [75, 95, 115, 135, 155, 175, 195, 215, 235, 255]
+diff --git a/configs/experiment_config/inference_fid_s0.yaml b/configs/experiment_config/inference_fid_s0.yaml
+new file mode 100644
+index 0000000..576c22d
+--- /dev/null
++++ b/configs/experiment_config/inference_fid_s0.yaml
+@@ -0,0 +1,7 @@
++# Shard 0/4 of inference_fid_ca (gpu_normal caps at 24h; pooled with script_utils/inference_fid.py).
++defaults:
++  - inference_fid_ca
++  - _self_
++
++run_name_: fid_200M_tri_s0
++nres_lens: [60, 80, 100, 120, 140, 160, 180, 200, 220, 240]
+diff --git a/configs/experiment_config/inference_fid_s1.yaml b/configs/experiment_config/inference_fid_s1.yaml
+new file mode 100644
+index 0000000..cecce6c
+--- /dev/null
++++ b/configs/experiment_config/inference_fid_s1.yaml
+@@ -0,0 +1,7 @@
++# Shard 1/4 of inference_fid_ca (gpu_normal caps at 24h; pooled with script_utils/inference_fid.py).
++defaults:
++  - inference_fid_ca
++  - _self_
++
++run_name_: fid_200M_tri_s1
++nres_lens: [65, 85, 105, 125, 145, 165, 185, 205, 225, 245]
+diff --git a/configs/experiment_config/inference_fid_s2.yaml b/configs/experiment_config/inference_fid_s2.yaml
+new file mode 100644
+index 0000000..792983d
+--- /dev/null
++++ b/configs/experiment_config/inference_fid_s2.yaml
+@@ -0,0 +1,7 @@
++# Shard 2/4 of inference_fid_ca (gpu_normal caps at 24h; pooled with script_utils/inference_fid.py).
++defaults:
++  - inference_fid_ca
++  - _self_
++
++run_name_: fid_200M_tri_s2
++nres_lens: [70, 90, 110, 130, 150, 170, 190, 210, 230, 250]
+diff --git a/configs/experiment_config/inference_fid_s3.yaml b/configs/experiment_config/inference_fid_s3.yaml
+new file mode 100644
+index 0000000..c8050a8
+--- /dev/null
++++ b/configs/experiment_config/inference_fid_s3.yaml
+@@ -0,0 +1,7 @@
++# Shard 3/4 of inference_fid_ca (gpu_normal caps at 24h; pooled with script_utils/inference_fid.py).
++defaults:
++  - inference_fid_ca
++  - _self_
++
++run_name_: fid_200M_tri_s3
++nres_lens: [75, 95, 115, 135, 155, 175, 195, 215, 235, 255]
+diff --git a/configs/experiment_config/inference_gam030_des.yaml b/configs/experiment_config/inference_gam030_des.yaml
+new file mode 100644
+index 0000000..feb2a9e
+--- /dev/null
++++ b/configs/experiment_config/inference_gam030_des.yaml
+@@ -0,0 +1,13 @@
++# Table-1 M_FS row at gamma = 0.30 (sc_scale_noise). Designability path.
++# inference_base's grid: 5 lengths x 100 = 500 samples, which reproduced 94.0% at gamma=0.45
++# against the paper's 96.4%.
++defaults:
++  - inference_ucond_200m_tri
++  - _self_
++
++run_name_: gam030_des
++compute_designability: True
++compute_fid: False
++sampling_caflow:
++  sampling_mode: sc
++  sc_scale_noise: 0.30
+diff --git a/configs/experiment_config/inference_gam030_fid.yaml b/configs/experiment_config/inference_gam030_fid.yaml
+new file mode 100644
+index 0000000..728975d
+--- /dev/null
++++ b/configs/experiment_config/inference_gam030_fid.yaml
+@@ -0,0 +1,13 @@
++# Table-1 M_FS row at gamma = 0.30 (sc_scale_noise). FID path.
++# Same length grid as inference_fid_ca (60:255:5, 40 lengths) so FPSD stays length-comparable,
++# but 25 samples/length = 1000 total instead of 5000: FID is biased at small N, so absolute
++# values sit above the paper's. The gamma-to-gamma gradient at fixed N is the quantity of interest.
++defaults:
++  - inference_fid_ca
++  - _self_
++
++run_name_: gam030_fid
++nsamples_per_len: 25
++sampling_caflow:
++  sampling_mode: sc
++  sc_scale_noise: 0.30
+diff --git a/configs/experiment_config/inference_gam035_des.yaml b/configs/experiment_config/inference_gam035_des.yaml
+new file mode 100644
+index 0000000..f9d21e2
+--- /dev/null
++++ b/configs/experiment_config/inference_gam035_des.yaml
+@@ -0,0 +1,13 @@
++# Table-1 M_FS row at gamma = 0.35 (sc_scale_noise). Designability path.
++# inference_base's grid: 5 lengths x 100 = 500 samples, which reproduced 94.0% at gamma=0.45
++# against the paper's 96.4%.
++defaults:
++  - inference_ucond_200m_tri
++  - _self_
++
++run_name_: gam035_des
++compute_designability: True
++compute_fid: False
++sampling_caflow:
++  sampling_mode: sc
++  sc_scale_noise: 0.35
+diff --git a/configs/experiment_config/inference_gam035_fid.yaml b/configs/experiment_config/inference_gam035_fid.yaml
+new file mode 100644
+index 0000000..2d2a249
+--- /dev/null
++++ b/configs/experiment_config/inference_gam035_fid.yaml
+@@ -0,0 +1,13 @@
++# Table-1 M_FS row at gamma = 0.35 (sc_scale_noise). FID path.
++# Same length grid as inference_fid_ca (60:255:5, 40 lengths) so FPSD stays length-comparable,
++# but 25 samples/length = 1000 total instead of 5000: FID is biased at small N, so absolute
++# values sit above the paper's. The gamma-to-gamma gradient at fixed N is the quantity of interest.
++defaults:
++  - inference_fid_ca
++  - _self_
++
++run_name_: gam035_fid
++nsamples_per_len: 25
++sampling_caflow:
++  sampling_mode: sc
++  sc_scale_noise: 0.35
+diff --git a/configs/experiment_config/inference_gam040_des.yaml b/configs/experiment_config/inference_gam040_des.yaml
+new file mode 100644
+index 0000000..604e2cb
+--- /dev/null
++++ b/configs/experiment_config/inference_gam040_des.yaml
+@@ -0,0 +1,13 @@
++# Table-1 M_FS row at gamma = 0.40 (sc_scale_noise). Designability path.
++# inference_base's grid: 5 lengths x 100 = 500 samples, which reproduced 94.0% at gamma=0.45
++# against the paper's 96.4%.
++defaults:
++  - inference_ucond_200m_tri
++  - _self_
++
++run_name_: gam040_des
++compute_designability: True
++compute_fid: False
++sampling_caflow:
++  sampling_mode: sc
++  sc_scale_noise: 0.40
+diff --git a/configs/experiment_config/inference_gam040_fid.yaml b/configs/experiment_config/inference_gam040_fid.yaml
+new file mode 100644
+index 0000000..2f38beb
+--- /dev/null
++++ b/configs/experiment_config/inference_gam040_fid.yaml
+@@ -0,0 +1,13 @@
++# Table-1 M_FS row at gamma = 0.40 (sc_scale_noise). FID path.
++# Same length grid as inference_fid_ca (60:255:5, 40 lengths) so FPSD stays length-comparable,
++# but 25 samples/length = 1000 total instead of 5000: FID is biased at small N, so absolute
++# values sit above the paper's. The gamma-to-gamma gradient at fixed N is the quantity of interest.
++defaults:
++  - inference_fid_ca
++  - _self_
++
++run_name_: gam040_fid
++nsamples_per_len: 25
++sampling_caflow:
++  sampling_mode: sc
++  sc_scale_noise: 0.40
+diff --git a/configs/experiment_config/inference_gam045_des.yaml b/configs/experiment_config/inference_gam045_des.yaml
+new file mode 100644
+index 0000000..4501b23
+--- /dev/null
++++ b/configs/experiment_config/inference_gam045_des.yaml
+@@ -0,0 +1,13 @@
++# Table-1 M_FS row at gamma = 0.45 (sc_scale_noise). Designability path.
++# inference_base's grid: 5 lengths x 100 = 500 samples, which reproduced 94.0% at gamma=0.45
++# against the paper's 96.4%.
++defaults:
++  - inference_ucond_200m_tri
++  - _self_
++
++run_name_: gam045_des
++compute_designability: True
++compute_fid: False
++sampling_caflow:
++  sampling_mode: sc
++  sc_scale_noise: 0.45
+diff --git a/configs/experiment_config/inference_gam045_fid.yaml b/configs/experiment_config/inference_gam045_fid.yaml
+new file mode 100644
+index 0000000..ed622ce
+--- /dev/null
++++ b/configs/experiment_config/inference_gam045_fid.yaml
+@@ -0,0 +1,13 @@
++# Table-1 M_FS row at gamma = 0.45 (sc_scale_noise). FID path.
++# Same length grid as inference_fid_ca (60:255:5, 40 lengths) so FPSD stays length-comparable,
++# but 25 samples/length = 1000 total instead of 5000: FID is biased at small N, so absolute
++# values sit above the paper's. The gamma-to-gamma gradient at fixed N is the quantity of interest.
++defaults:
++  - inference_fid_ca
++  - _self_
++
++run_name_: gam045_fid
++nsamples_per_len: 25
++sampling_caflow:
++  sampling_mode: sc
++  sc_scale_noise: 0.45
+diff --git a/configs/experiment_config/inference_gam050_des.yaml b/configs/experiment_config/inference_gam050_des.yaml
+new file mode 100644
+index 0000000..eaa609c
+--- /dev/null
++++ b/configs/experiment_config/inference_gam050_des.yaml
+@@ -0,0 +1,13 @@
++# Table-1 M_FS row at gamma = 0.50 (sc_scale_noise). Designability path.
++# inference_base's grid: 5 lengths x 100 = 500 samples, which reproduced 94.0% at gamma=0.45
++# against the paper's 96.4%.
++defaults:
++  - inference_ucond_200m_tri
++  - _self_
++
++run_name_: gam050_des
++compute_designability: True
++compute_fid: False
++sampling_caflow:
++  sampling_mode: sc
++  sc_scale_noise: 0.50
+diff --git a/configs/experiment_config/inference_gam050_fid.yaml b/configs/experiment_config/inference_gam050_fid.yaml
+new file mode 100644
+index 0000000..59f10b3
+--- /dev/null
++++ b/configs/experiment_config/inference_gam050_fid.yaml
+@@ -0,0 +1,13 @@
++# Table-1 M_FS row at gamma = 0.50 (sc_scale_noise). FID path.
++# Same length grid as inference_fid_ca (60:255:5, 40 lengths) so FPSD stays length-comparable,
++# but 25 samples/length = 1000 total instead of 5000: FID is biased at small N, so absolute
++# values sit above the paper's. The gamma-to-gamma gradient at fixed N is the quantity of interest.
++defaults:
++  - inference_fid_ca
++  - _self_
++
++run_name_: gam050_fid
++nsamples_per_len: 25
++sampling_caflow:
++  sampling_mode: sc
++  sc_scale_noise: 0.50
+diff --git a/configs/experiment_config/inference_gam055_des.yaml b/configs/experiment_config/inference_gam055_des.yaml
+new file mode 100644
+index 0000000..69c4036
+--- /dev/null
++++ b/configs/experiment_config/inference_gam055_des.yaml
+@@ -0,0 +1,13 @@
++# Table-1 M_FS row at gamma = 0.55 (sc_scale_noise). Designability path.
++# inference_base's grid: 5 lengths x 100 = 500 samples, which reproduced 94.0% at gamma=0.45
++# against the paper's 96.4%.
++defaults:
++  - inference_ucond_200m_tri
++  - _self_
++
++run_name_: gam055_des
++compute_designability: True
++compute_fid: False
++sampling_caflow:
++  sampling_mode: sc
++  sc_scale_noise: 0.55
+diff --git a/configs/experiment_config/inference_gam055_fid.yaml b/configs/experiment_config/inference_gam055_fid.yaml
+new file mode 100644
+index 0000000..f9c1cee
+--- /dev/null
++++ b/configs/experiment_config/inference_gam055_fid.yaml
+@@ -0,0 +1,13 @@
++# Table-1 M_FS row at gamma = 0.55 (sc_scale_noise). FID path.
++# Same length grid as inference_fid_ca (60:255:5, 40 lengths) so FPSD stays length-comparable,
++# but 25 samples/length = 1000 total instead of 5000: FID is biased at small N, so absolute
++# values sit above the paper's. The gamma-to-gamma gradient at fixed N is the quantity of interest.
++defaults:
++  - inference_fid_ca
++  - _self_
++
++run_name_: gam055_fid
++nsamples_per_len: 25
++sampling_caflow:
++  sampling_mode: sc
++  sc_scale_noise: 0.55
+diff --git a/configs/experiment_config/inference_gam060_des.yaml b/configs/experiment_config/inference_gam060_des.yaml
+new file mode 100644
+index 0000000..c7723fa
+--- /dev/null
++++ b/configs/experiment_config/inference_gam060_des.yaml
+@@ -0,0 +1,13 @@
++# Table-1 M_FS row at gamma = 0.60 (sc_scale_noise). Designability path.
++# inference_base's grid: 5 lengths x 100 = 500 samples, which reproduced 94.0% at gamma=0.45
++# against the paper's 96.4%.
++defaults:
++  - inference_ucond_200m_tri
++  - _self_
++
++run_name_: gam060_des
++compute_designability: True
++compute_fid: False
++sampling_caflow:
++  sampling_mode: sc
++  sc_scale_noise: 0.60
+diff --git a/configs/experiment_config/inference_gam060_fid.yaml b/configs/experiment_config/inference_gam060_fid.yaml
+new file mode 100644
+index 0000000..323afb7
+--- /dev/null
++++ b/configs/experiment_config/inference_gam060_fid.yaml
+@@ -0,0 +1,13 @@
++# Table-1 M_FS row at gamma = 0.60 (sc_scale_noise). FID path.
++# Same length grid as inference_fid_ca (60:255:5, 40 lengths) so FPSD stays length-comparable,
++# but 25 samples/length = 1000 total instead of 5000: FID is biased at small N, so absolute
++# values sit above the paper's. The gamma-to-gamma gradient at fixed N is the quantity of interest.
++defaults:
++  - inference_fid_ca
++  - _self_
++
++run_name_: gam060_fid
++nsamples_per_len: 25
++sampling_caflow:
++  sampling_mode: sc
++  sc_scale_noise: 0.60

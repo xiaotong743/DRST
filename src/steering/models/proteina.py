@@ -1,22 +1,8 @@
-"""Proteina adapter: the frozen model behind steering's endpoint(x, t) contract.
-
-Everything Proteina-specific lives here. Measured constraints it encodes:
-
-- Coordinates are NANOMETRES inside the flow matcher and network (ang_to_nm at proteina.py:112).
-- `predict_clean_n_v_w_guidance` returns an UNCENTRED x_pred while computing v from the centred
-  one, so v == (theta - x)/(1-t) does not hold as returned (measured ||COM(x_pred)|| = 0.005-0.019
-  nm). We centre theta and recompute v.
-- `torch.autograd.grad` and `backward(inputs=[...])` both raise RuntimeError against the reentrant
-  checkpoint at protein_transformer.py:381/385/389. Plain `.backward()` works and, with frozen
-  parameters, allocates no parameter gradients.
-- get_gt is only pointwise in t when gt_p == 1 (transform_gt normalises over the whole vector), so
-  eps is precomputed on the step grid and looked up.
-- The batch dict is exactly {x_t, t, mask}: t must be 1-D [N] and mask must be torch.bool.
-  "strict_feats" must not appear.
-- DATA_PATH must be set before load: FoldEmbeddingSeqFeat reads
-  $DATA_PATH/pdb_raw/cath_label_mapping.pt at construction.
+"""Proteina adapter
 """
 
+import contextlib
+import math
 import os
 
 import torch
@@ -71,6 +57,17 @@ class ProteinaModel:
         theta = self.fm._mask_and_zero_com(x_pred, mask)
         return theta, v
 
+    def reward_endpoint(self, x, t):
+        """theta = D_t(x) for the reward: no velocity, no 1/(1-t).
+
+        At t = 1, D_1 is the identity and `xt_dot` divides by zero. Reached on the final step of
+        every run, since the weight update's min(t+dt, 1 - 1e-9) is exactly 1.0 in fp32.
+        """
+        if float(t.max()) >= 1.0 - 1e-6:
+            return x
+        theta, _ = self.endpoint(x, t)
+        return theta
+
     def score(self, x, v, t):
         n = x.shape[1]
         t_ext = torch.full((x.shape[0], n), float(t), dtype=x.dtype, device=x.device)
@@ -115,25 +112,43 @@ def ca_ca_spacing(x):
 def soft_bin_pairwise_distances(x, min_dist, max_dist, dim):
     """Differentiable stand-in for Proteina's `bin_pairwise_distances`.
 
-    **[src]** the shipped version is `bucketize` + `one_hot` (feature_factory.py), so the
-    pairwise-distance pair feature contributes EXACTLY zero gradient and Psi_t(x) is discontinuous
-    in x. The coordinate path into the trunk (`linear_3d_embed(x_t)`,
-    protein_transformer.py:665-670) is differentiable, so steering still works; what the binning
-    withholds is the pair-distance contribution.
+    The shipped version is `bucketize` + `one_hot`, so the pair-distance feature contributes
+    exactly zero gradient and Psi_t(x) is discontinuous in x. This replaces the one-hot with a
+    hat function (linear interpolation onto bin centres), C^0 in x, so the pair path carries a
+    gradient. The coordinate path `linear_3d_embed(x_t)` is differentiable either way.
 
-    This replaces the one-hot with a hat function (linear interpolation onto bin centres): weights
-    sum to one for interior values and the map is C^0 in x, so the pair path carries a gradient.
-
-    Patch ONLY bin_pairwise_distances. `rel_seq_sep` also calls `bin_and_one_hot`, with
-    half-integer limits on INTEGER separations, so a hat there would split every separation 50/50
-    and destroy the model's main inductive bias.
-
-    Adopting this means the frozen model IS the soft-binned model: using hard binning for the
-    drift and soft for the gradient makes them different functions.
+    Patch ONLY bin_pairwise_distances: `rel_seq_sep` also calls `bin_and_one_hot`, with
+    half-integer limits on INTEGER separations, so a hat there would split every separation 50/50.
     """
     d = torch.cdist(x, x)
     limits = torch.linspace(min_dist, max_dist, dim - 1, device=x.device, dtype=x.dtype)
     w = limits[1] - limits[0]
     centers = torch.cat([limits[:1] - w / 2, (limits[:-1] + limits[1:]) / 2, limits[-1:] + w / 2])
-    u = (d[..., None] - centers) / w
-    return (1.0 - u.abs()).clamp_min(0.0)
+    # Clamp d so the END BINS SATURATE, reproducing the shipped open-ended first/last bins
+    # ("<l1", ">l_{d-1}"). Without it, any distance outside [min-1.5w, max+1.5w] fell outside
+    # every hat and returned an ALL-ZERO row -- 21.9% of pairs at prior scale, every diagonal.
+    u = (d.clamp(float(centers[0]), float(centers[-1]))[..., None] - centers) / w
+    hat = (1.0 - u.abs()).clamp_min(0.0)
+    return hat.to(torch.get_default_dtype())
+
+
+@contextlib.contextmanager
+def soft_binning():
+    """Install the differentiable pair-distance binning for the block. The production path.
+
+    `bin_pairwise_distances` is a module global looked up by name at all three call sites, so
+    rebinding it reaches every pairwise-distance feature and nothing else.
+
+    Inside the block the frozen model IS the soft-binned model, so one function supplies both the
+    drift and the gradient. **[measured]** that costs 0.66% of the denoiser endpoint at t=0.5
+    (velocity 0.40%), against hard binning withholding the pair path entirely (up to 2.02x
+    magnitude deficit, direction cosine 0.42). tests/test_binning.py's partition-of-unity and
+    argmax checks are what distinguish a faithful surrogate from a broken one.
+    """
+    from proteinfoundation.nn import feature_factory as ff
+    hard = ff.bin_pairwise_distances
+    ff.bin_pairwise_distances = soft_bin_pairwise_distances
+    try:
+        yield
+    finally:
+        ff.bin_pairwise_distances = hard

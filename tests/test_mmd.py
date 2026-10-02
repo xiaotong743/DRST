@@ -1,10 +1,10 @@
-"""mmd.py: kernel sanity, and the Gateaux identity that certifies psi = dR/dmu."""
+"""rewards.py: kernel sanity, and the Gateaux identity that certifies psi = dR/dmu."""
 
 import math
 import torch
 import pytest
 
-from steering.mmd import rbf_gram, mmd2, psi
+from steering.rewards import rbf_gram, mmd2, psi
 
 torch.set_default_dtype(torch.float64)
 
@@ -104,7 +104,7 @@ def test_rbf_gram_is_accurate_where_the_expansion_is_not():
 
 
 def test_rbf_gram_supports_forward_mode_ad():
-    """Algorithm 3 takes a jvp through the kernel (alg3.psidot_terms), which torch.cdist cannot
+    """Algorithm 3 takes a jvp through the kernel (implt.psidot_terms), which torch.cdist cannot
     do. Pin it so a future switch back to cdist fails here rather than inside the solver."""
     a = torch.randn(6, 2, dtype=torch.float64)
     b = torch.randn(4, 2, dtype=torch.float64)

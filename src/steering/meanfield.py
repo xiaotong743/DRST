@@ -1,22 +1,50 @@
-"""Algorithm 3: the implicit linear solver for Psidot.
+"""The mean-field log-weight update, and the two ways to solve it.
 
-Solves (I - w*Phitilde) psidot = r from Proposition 3.3's eq (13). A direct solve, so unlike
-Algorithm 4 it carries no contraction requirement.
-
-Two facts make it tractable: `y` in line 4 is a free point, so the mean-centring term drops out
-of grad_y Phitilde; and line 6 needs only the contraction sum_j w_j b_j . g_ij, which is one jvp.
-Potentials supply Phi without lam or alpha(t); the caller applies lam * alpha(t).
+Algorithm 4 (`picard`) is a damped fixed point; Algorithm 3 (`implicit_psidot`) is the direct
+solve of eq (13) and carries no contraction requirement. They target the same Psidot, so a run
+can be scored against the other solver. Both need the reward's first variation -- FK needs
+neither.
 """
 
 import torch
 
+from .smc import normalise
+
+def picard(a0, psi_t, psi_of_weights, time_term, bgrad, t, dt, lam,
+           k_fp=50, damp=1.0, tol=1e-9, increment_clip=None, combine=None):
+    """Algorithm 4: damped fixed point on the log-weights.
+
+    Returns (a, w, k_used, resid, history, psidot). `psidot` is one iteration behind `w`, as the
+    paper's line 11 has it. For a pointwise reward `psi_of_weights` ignores w, so the fixed point
+    is reached in one step at damp=1.
+    """
+    a = a0.clone()
+    w = normalise(a)
+    history = []
+    resid = float("inf")
+    k_used = 0
+    psidot = torch.zeros_like(a0)
+    for k in range(k_fp):
+        psi_next = psi_of_weights(combine(a) if combine is not None else w)
+        psidot = lam * ((t + dt) * psi_next - t * psi_t) / dt + time_term
+        inc = dt * (psidot + bgrad)
+        if increment_clip is not None:
+            inc = inc.clamp(-increment_clip, increment_clip)
+        a_tilde = a0 + inc
+        a_new = (1.0 - damp) * a + damp * a_tilde
+        resid = float((a_new - a).abs().max())
+        history.append(resid)
+        a, w = a_new, normalise(a_new)
+        k_used = k + 1
+        if resid < tol:
+            break
+    return a, w, k_used, resid, history, psidot
+
+
+# --- Algorithm 3: the direct solve of (I - w*Phitilde) psidot = r, eq (13)
+
 
 def implicit_psidot(phi, w, dpsi_dt, phi_grad_b, bgrad):
-    """Lines 5-7. Returns (psidot, residual).
-
-        phi [N,N] Phitilde including lam*alpha(t); dpsi_dt [N] with the pushforward moving with t;
-        phi_grad_b [N] the line-6 contraction; bgrad [N] = b_j . grad_y Psi_t, as Algorithm 4 uses.
-        """
     n = phi.shape[0]
     r = dpsi_dt + phi_grad_b + phi @ (w * bgrad)
     a_mat = torch.eye(n, dtype=phi.dtype, device=phi.device) - w[None, :] * phi

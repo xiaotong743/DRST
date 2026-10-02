@@ -1,6 +1,6 @@
 # Phase 2 and the binning diagnostic, on the frozen Proteina checkpoint.
 torch_dtype: float64
-out_dir: scratch/out
+out_dir: experiments/out
 ckpt: /lustre/groups/ml01/workspace/xiaotong.fu/playground/proteina_data/ckpts/proteina_v1.1_DFS_200M_tri.ckpt
 data_path: /lustre/groups/ml01/workspace/xiaotong.fu/playground/proteina_data
 

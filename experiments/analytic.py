@@ -1,6 +1,6 @@
 """Closed-form analytic testbed: a reward whose tilted target is known exactly.
 
-Library code, not an experiment. Three scratch scripts imported this from scratch/, which is why
+Library code, not an experiment. Three experiments scripts imported this from experiments/, which is why
 it now lives here.
 
 The model is the 1-D linear-Gaussian flow x_t = t x_1 + (1-t) x_0 with x_0, x_1 ~ N(0,1), for
@@ -90,7 +90,7 @@ def algorithm4(X, A_t, Xn, t, dt, lam, c, K_FP, damp):
     return psidot, a
 
 
-def algorithm1(N, nsteps, lam, c=1.0, eps=0.5, solver="alg3", K_FP=3, damp=1.0, seed=0):
+def algorithm1(N, nsteps, lam, c=1.0, eps=0.5, solver="implicit", K_FP=3, damp=1.0, seed=0):
     rng = np.random.default_rng(seed)
     X = rng.standard_normal(N)
     A_t = np.zeros(N)
@@ -102,7 +102,7 @@ def algorithm1(N, nsteps, lam, c=1.0, eps=0.5, solver="alg3", K_FP=3, damp=1.0, 
         gradPsi = -lam * t * (mbar - c) * dTdx(t)
         drift = b_drift(X, t) + eps * score(X, t) + eps * gradPsi
         Xn = X + drift * dt + np.sqrt(2 * eps * dt) * rng.standard_normal(N)
-        if solver == "alg3":
+        if solver == "implicit":
             # Sherman-Morrison is exact here (A is I plus a rank-one term) and is O(N); check it
             # against the O(N^3) dense solve on a few steps only.
             pd, psm = algorithm3(X, w, t, dt, lam, c, dense=(k % 100 == 0))

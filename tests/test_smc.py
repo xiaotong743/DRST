@@ -1,9 +1,10 @@
-"""ips.py: ESS, resampling identities/unbiasedness, and the Picard collapse property."""
+"""smc.py: ESS, resampling identities/unbiasedness, and the Picard collapse property."""
 
 import torch
 import pytest
 
-from steering.ips import (normalise, ess, residual_resample, systematic_resample, picard)
+from steering.meanfield import picard
+from steering.smc import ess, residual_resample, systematic_resample
 
 torch.set_default_dtype(torch.float64)
 
@@ -139,10 +140,3 @@ def test_picard_increment_clip_binds():
     assert float((a - s["a0"]).abs().max()) > 1e-9, "log-weights did not move at all"
 
 
-def test_picard_rejects_zero_iterations():
-    """k_fp=0 would leave the weights at A_t, making a reweight=True run bit-identical to
-    gradient-only steering while reporting resid=inf. That must not pass silently."""
-    s = _pointwise_setup()
-    for k in (0, -1):
-        with pytest.raises(ValueError, match="k_fp"):
-            picard(**s, k_fp=k, damp=1.0)

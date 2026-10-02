@@ -10,7 +10,7 @@ requires-python = ">=3.11"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
-packages = ["steering"]
+packages = ["steering", "steering.models"]
 
 [tool.pytest.ini_options]
 markers = ["slow: multi-minute end-to-end claims (run with -m slow)",

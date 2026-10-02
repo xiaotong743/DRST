@@ -1,9 +1,10 @@
-"""sde.py: lambda=0 identity, drift bookkeeping, and the gauge freedom in psi."""
+"""steerer.py: lambda=0 identity, drift bookkeeping, and the gauge freedom in psi."""
 
 import torch
 
-from steering.sde import steer, Config, Pointwise, _dot
-from steering.toy import GaussianMixtureFlow
+from steering.rewards import Pointwise
+from steering.steerer import steer, Config
+from toy import GaussianMixtureFlow
 
 torch.set_default_dtype(torch.float64)
 
@@ -104,7 +105,7 @@ def test_reweight_flag_changes_weights_not_positions():
 
 def test_weights_fn_matches_psi_for_both_potentials():
     """weights_fn caches the Gram so the Picard loop is matvecs. It must agree with psi()."""
-    from steering.sde import MMD
+    from steering.rewards import MMD
     g = torch.Generator().manual_seed(2)
     theta = torch.randn(24, 1, generator=g)
     w = torch.rand(24, generator=g).add(0.05)
@@ -123,8 +124,8 @@ def test_literal_fd_converges_to_eq20():
     paper's low-dimensional experiments) and eq (20) (used in the protein experiments). They
     agree only to O(dt), so the gap must shrink with the step size."""
     import math
-    from steering.toy import GaussianMixtureFlow
-    from steering.sde import MMD
+    from toy import GaussianMixtureFlow
+    from steering.rewards import MMD
     m = GaussianMixtureFlow(eps_mode="const", means=(-1.0, 1.0), stds=(1.0, 1.0),
                             weights=(1.0, 3.0))
     tgt = GaussianMixtureFlow(means=(-1.0, 1.0), stds=(1.0, 1.0), weights=(3.0, 1.0))
