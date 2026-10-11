@@ -7,8 +7,10 @@ import os
 
 import torch
 
+from .base_model import BaseModel
 
-class ProteinaModel:
+
+class ProteinaModel(BaseModel):
     def __init__(self, ckpt, data_path, n_res, n_particles, device="cuda",
                  gt_mode="us", gt_p=1.0, gt_clamp_val=10.0,
                  schedule_mode="log", schedule_p=2.0, nsteps=100,
@@ -34,7 +36,6 @@ class ProteinaModel:
         self._eps = self.fm.get_gt(self.ts[:-1], gt_mode, gt_p, gt_clamp_val).clone()
         self.n_forward = 0
 
-    # --- model contract ---------------------------------------------------
     def prior(self, n, generator=None):
         """Uses the GLOBAL torch RNG when generator is None, matching sample_reference, so a
         lambda=0 run can be compared bitwise against fm.full_simulation."""
@@ -42,31 +43,17 @@ class ProteinaModel:
                                         dtype=self.dtype, mask=self.mask[:n])
 
     def endpoint(self, x, t):
-        """x [N,n,3] nm, t [N] -> (theta [N,n,3] centred+masked, v [N,n,3]); differentiable."""
+        """
+        one step forward of E[x1|x_t] 
+        """
         mask = self.mask[:x.shape[0]]
         batch = {"x_t": x, "t": t, "mask": mask}          # exactly these three keys
         self.n_forward += 1
         x_pred, _ = self.model.predict_clean_n_v_w_guidance(
             batch, guidance_weight=1.0, autoguidance_ratio=0.0)
-        # v from the RAW x_pred, exactly as Proteina does it (xt_dot centres both arguments
-        # internally). Centring x_pred first and letting xt_dot centre again is equal in exact
-        # arithmetic but not in float32, and the difference accumulates over the trajectory.
         v = self.fm.xt_dot(x_pred, x, t, mask)
-        # theta is centred separately for the reward; since x is already zero-COM, this keeps
-        # v == (theta - x)/(1-t) to float precision.
         theta = self.fm._mask_and_zero_com(x_pred, mask)
         return theta, v
-
-    def reward_endpoint(self, x, t):
-        """theta = D_t(x) for the reward: no velocity, no 1/(1-t).
-
-        At t = 1, D_1 is the identity and `xt_dot` divides by zero. Reached on the final step of
-        every run, since the weight update's min(t+dt, 1 - 1e-9) is exactly 1.0 in fp32.
-        """
-        if float(t.max()) >= 1.0 - 1e-6:
-            return x
-        theta, _ = self.endpoint(x, t)
-        return theta
 
     def score(self, x, v, t):
         n = x.shape[1]
@@ -85,7 +72,6 @@ class ProteinaModel:
     def project(self, x):
         return self.fm._mask_and_zero_com(x, self.mask[:x.shape[0]])
 
-    # --- output -----------------------------------------------------------
     def to_pdb(self, x, out_dir, prefix="sample"):
         from proteinfoundation.utils.ff_utils.pdb_utils import write_prot_to_pdb
         os.makedirs(out_dir, exist_ok=True)
@@ -96,6 +82,8 @@ class ProteinaModel:
                 for i in range(atom37.shape[0])]
 
 
+
+## Helper functions for proteina
 def radius_of_gyration(theta, mask):
     """[N,n,3] nm, [N,n] bool -> [N] nm. Differentiable, SE(3) invariant."""
     from proteinfoundation.utils.align_utils.align_utils import mean_w_mask
@@ -110,23 +98,10 @@ def ca_ca_spacing(x):
 
 
 def soft_bin_pairwise_distances(x, min_dist, max_dist, dim):
-    """Differentiable stand-in for Proteina's `bin_pairwise_distances`.
-
-    The shipped version is `bucketize` + `one_hot`, so the pair-distance feature contributes
-    exactly zero gradient and Psi_t(x) is discontinuous in x. This replaces the one-hot with a
-    hat function (linear interpolation onto bin centres), C^0 in x, so the pair path carries a
-    gradient. The coordinate path `linear_3d_embed(x_t)` is differentiable either way.
-
-    Patch ONLY bin_pairwise_distances: `rel_seq_sep` also calls `bin_and_one_hot`, with
-    half-integer limits on INTEGER separations, so a hat there would split every separation 50/50.
-    """
     d = torch.cdist(x, x)
     limits = torch.linspace(min_dist, max_dist, dim - 1, device=x.device, dtype=x.dtype)
     w = limits[1] - limits[0]
     centers = torch.cat([limits[:1] - w / 2, (limits[:-1] + limits[1:]) / 2, limits[-1:] + w / 2])
-    # Clamp d so the END BINS SATURATE, reproducing the shipped open-ended first/last bins
-    # ("<l1", ">l_{d-1}"). Without it, any distance outside [min-1.5w, max+1.5w] fell outside
-    # every hat and returned an ALL-ZERO row -- 21.9% of pairs at prior scale, every diagonal.
     u = (d.clamp(float(centers[0]), float(centers[-1]))[..., None] - centers) / w
     hat = (1.0 - u.abs()).clamp_min(0.0)
     return hat.to(torch.get_default_dtype())
@@ -134,16 +109,8 @@ def soft_bin_pairwise_distances(x, min_dist, max_dist, dim):
 
 @contextlib.contextmanager
 def soft_binning():
-    """Install the differentiable pair-distance binning for the block. The production path.
-
-    `bin_pairwise_distances` is a module global looked up by name at all three call sites, so
-    rebinding it reaches every pairwise-distance feature and nothing else.
-
-    Inside the block the frozen model IS the soft-binned model, so one function supplies both the
-    drift and the gradient. **[measured]** that costs 0.66% of the denoiser endpoint at t=0.5
-    (velocity 0.40%), against hard binning withholding the pair path entirely (up to 2.02x
-    magnitude deficit, direction cosine 0.42). tests/test_binning.py's partition-of-unity and
-    argmax checks are what distinguish a faithful surrogate from a broken one.
+    """Context manager to monkey-patch Proteina's hard binning with a differentiable version.
+    This is needed for the reward to be differentiable, and is only used in the toy experiments.
     """
     from proteinfoundation.nn import feature_factory as ff
     hard = ff.bin_pairwise_distances

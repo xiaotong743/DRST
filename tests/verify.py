@@ -113,8 +113,10 @@ def toy(cfg, *scheds):
     extra = [f"--set.lams={json.dumps(sub)}"] if sub else []
     for sched in (scheds or ("const", "sqrt1mt", "memoryless")):
         name = f"fig3_sd0.5_{sched}.json"
-        r = subprocess.run([py, "experiments/run.py", "configs/simulation.yaml", "fig3", sched,
-                            f"--set.out_dir={tmp}"] + extra, capture_output=True, text=True)
+        env = dict(os.environ, PYTHONPATH="experiments")
+        r = subprocess.run([py, "-m", "toy.run", "configs/simulation.yaml", "fig3", sched,
+                            f"--set.out_dir={tmp}"] + extra, capture_output=True, text=True,
+                           env=env)
         if r.returncode != 0:
             print(f"  fig3 {sched}: FAILED\n{r.stdout[-1500:]}{r.stderr[-1500:]}")
             ok = False

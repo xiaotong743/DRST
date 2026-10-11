@@ -1,17 +1,3 @@
-"""Mean-field steered sampler (Algorithm 1), and the FK potential variant.
-
-    dX = [b + eps_t*s + eps_t*grad_x Psi] dt + sqrt(2 eps_t) dB      (12a)
-    dA = [b . grad_x Psi + dPsi/dt] dt                               (12b)
-
-Psi_t(x, mu) = lam * t * psi(xhat1(x,t), pihat_t); b in (12b) is v alone.
-
-This module is the published method and nothing else. Variants subclass `Steerer` and override
-its hooks: `FKSteerer` below, and experiments/steer_a.py.
-
-Model contract: prior(n, gen), endpoint(x, t) -> (theta, v), score(x, v, t), eps(t); optionally
-project(x) and reward_endpoint(x, t).
-"""
-
 from dataclasses import dataclass, field
 
 import torch
@@ -44,11 +30,8 @@ def _chunked(fn, x, t_vec, chunk):
 
 
 def _reward_endpoint(model, x, t_vec, chunk=None):
-    """theta = D_t(x) for the reward only. ProteinaModel overrides it to return x at t = 1."""
-    fn = getattr(model, "reward_endpoint", None)
+    """theta = D_t(x) for the reward only."""
     with torch.no_grad():
-        if fn is not None:
-            return _chunked(fn, x, t_vec, chunk)
         theta, _ = _chunked(model.endpoint, x, t_vec, chunk)
         return theta
 
@@ -75,7 +58,6 @@ class Config:
     endpoint_lag: str = "advance"     # "advance" = eq (20); "literal" = plain finite difference
     seed: int = 0
     ts: torch.Tensor | None = None    # explicit time grid; uniform if None
-    record_traj: int = 0              # record this many particles' positions each step
     check_drift: bool = False         # assert the realised drift matches the intended one
     global_rng: bool = False          # GLOBAL torch RNG, so lam=0 is bitwise fm.full_simulation
     vf_tail_t: float = 1.0            # t > this: g_t = 0. Proteina flips to the ODE at 0.99.
@@ -96,7 +78,6 @@ class Steerer:
         self._diag_extra = {}
         self.check()
 
-    # ------------------------------------------------------------------ hooks
     def check(self):
         pass
 
@@ -104,17 +85,23 @@ class Steerer:
         return self.model.prior(self.n, gen)
 
     def coeffs(self, t_val):
-        """(score coefficient, steering coefficient). Both are eps_t in eq (12a)."""
-        g = self.model.eps(t_val)
-        if t_val > self.cfg.vf_tail_t:
-            g = 0.0
+        """(score, steering) coefficients. Equal under eq (12a); a subclass may scale the second."""
+        g = 0.0 if t_val > self.cfg.vf_tail_t else self.model.eps(t_val)
         return g, g
 
     def begin(self, x, a):
         """Per-run state. Algorithm 1 has none."""
 
-    def reindex(self, idx, a):
-        """Permute per-particle state onto the resampled ancestors. Algorithm 1 has none."""
+    def reindex(self, idx, a, x):
+        """Permute per-particle state onto the resampled ancestors, BEFORE x itself moves, so an
+        observer can still see the pre-resample population. Algorithm 1 has none."""
+
+    def on_step(self, x):
+        """Called once per step with the post-resample positions. Algorithm 1 has none."""
+
+    def extra_output(self):
+        """Keys a subclass adds to run()'s dict. Algorithm 1 has none."""
+        return {}
 
     def resample_gen(self, gen):
         """RNG for the resampling draw. A subclass can use a private stream."""
@@ -123,6 +110,11 @@ class Steerer:
     def finalise(self, x, a):
         """Last word on (x, a) after the loop. Algorithm 1 has none."""
         return x, a
+
+    def checkpoint(self, k, diffusing):
+        """Steps where _resample fires. FK reads the reward on exactly these."""
+        cfg = self.cfg
+        return bool(cfg.resample_every and diffusing and (k + 1) % cfg.resample_every == 0)
 
     def noise_std(self, t_val, dt_t):
         g, _ = self.coeffs(t_val)
@@ -171,7 +163,7 @@ class Steerer:
         return gx, gt
 
     def _move(self, x, t_val, dt_t, v_d, gx, gen):
-        """PHASE 2. One Euler-Maruyama step of eq (12a). FK leaves it untouched: gx is zero."""
+        """PHASE 2. One Euler-Maruyama step of eq (12a). FK: gx is zero."""
         cfg, model = self.cfg, self.model
         c_score, c_steer = self.coeffs(t_val)
         std = self.noise_std(t_val, dt_t)
@@ -255,12 +247,12 @@ class Steerer:
         cfg, n_particles = self.cfg, self.n
         ess_pre = ess(a)
         n_res = 0
-        if cfg.resample_every and diffusing and (k + 1) % cfg.resample_every == 0:
+        if self.checkpoint(k, diffusing):
             idx = residual_resample(normalise(a), self.resample_gen(gen))
+            self.reindex(idx, a, x)
             if not torch.equal(idx, torch.arange(n_particles, device=idx.device)):
                 x = x[idx]
                 n_res = int(n_particles - torch.unique(idx).numel())
-            self.reindex(idx, a)
             a = torch.zeros_like(a)
         return x, a, ess_pre, n_res
 
@@ -279,7 +271,6 @@ class Steerer:
         a = torch.zeros(n_particles, dtype=torch.float64, device=x.device)
         self.begin(x, a)
         diag = []
-        traj = [x[:cfg.record_traj].reshape(-1).clone()] if cfg.record_traj else None
 
         for k in range(len(ts) - 1):
             # dt stays a tensor: fp32 addition is not associative and 1/(1-t) amplifies it
@@ -287,6 +278,7 @@ class Steerer:
             dt = float(dt_t)
             c_score, c_steer = self.coeffs(t_val)
             diffusing = float(self.noise_std(t_val, dt_t)) > 0
+            self.at_ckpt = self.checkpoint(k, diffusing)
             w = normalise(a)
             if retained is not None:
                 w_comb = normalise(torch.cat([retained["a"].to(a.dtype), a]))
@@ -301,9 +293,7 @@ class Steerer:
                                         theta_d, v_d, psi_d, gx, gt)
             x = x_next
             x, a, ess_pre, n_res = self._resample(x, a, k, diffusing, g)
-
-            if traj is not None:
-                traj.append(x[:cfg.record_traj].reshape(-1).clone())
+            self.on_step(x)
             diag.append(dict(
                 step=k, t=t_val, dt=dt, eps=c_steer, g=c_score, ess=ess_pre, ess_post=ess(a),
                 n_resampled=n_res, drift_dev=drift_dev,
@@ -315,8 +305,7 @@ class Steerer:
 
         x, a = self.finalise(x, a)
 
-        return dict(x=x, a=a, w=normalise(a), diag=diag,
-                    traj=(torch.stack(traj) if traj is not None else None), ts=ts)
+        return dict(x=x, a=a, w=normalise(a), diag=diag, ts=ts, **self.extra_output())
 
 
 
@@ -350,19 +339,7 @@ def multibatch(model, potential, cfg, n_particles, n_batches, device="cpu"):
 
 
 # --------------------------------------------------------------------------------------------
-# Feynman-Kac potential steering (arXiv:2501.06848). The dynamics are untouched: FK acts only
-# through the weights and resampling, and the weight comes from a potential of the reward VALUE
-# rather than the mean-field rate of eq (12b), so no gradient is taken and r may be any black box.
-#
-#     target     p(x1) prop. p_theta(x1) * exp(lam * r(x1))
-#     constraint prod_t G_t = exp(lam * r(x1))
-#
-# r is read off psi, so a measure-dependent potential works unchanged, and `_solve` makes it
-# SELF-CONSISTENT: psi is read at the measure the weights themselves define, both per step and at
-# the terminal rule, so the weights solve mu prop. p1 exp(lam psi(.,mu)). A per-particle reward
-# ignores its weight argument, so the solve exits on the first pass and is bitwise unaffected.
-# **[measured]** on the toy MMD at lam=20, one pass collapses to ESS/N 0.003 where the solve holds
-# 0.993. The reference implementation has no such loop; this is the distributional extension.
+# Feynman-Kac potential steering 
 # --------------------------------------------------------------------------------------------
 
 
@@ -416,13 +393,22 @@ class FKSteerer(Steerer):
     def resample_gen(self, gen):
         return self._gen
 
-    def reindex(self, idx, a):
+    def reindex(self, idx, a, x):
         self._logP = (self._logP + a)[idx]      # ancestral, never reset
         self._r_prev = self._r_prev[idx]
 
     def _cal_sample_gradient(self, x, t_val, sup, w_comb):
         """FK weights the reward VALUE and never differentiates it."""
         return torch.zeros_like(x), torch.zeros(self.n, dtype=x.dtype, device=x.device)
+
+    def _reward(self, x, t_val, w_comb):
+        """No psi: FK reads the reward in _weights, on checkpoints only. The base computes psi
+        every step and FK never reads it -- which for an external reward is 400 tool calls."""
+        t_vec = torch.full((self.n,), t_val, dtype=x.dtype, device=x.device)
+        with torch.no_grad():
+            theta_d, v_d = _chunked(self.model.endpoint, x, t_vec, self._nograd_chunk())
+        theta_d, v_d = theta_d.detach(), v_d.detach()
+        return theta_d, v_d, theta_d, torch.zeros(self.n, dtype=x.dtype, device=x.device)
 
     def _solve(self, a0, r_prev, f):
         """Self-consistent weights: psi is read at the measure the weights themselves define.
@@ -444,7 +430,7 @@ class FKSteerer(Steerer):
 
     def _weights(self, a, w, w_comb, x, x_next, t_val, dt, theta_d, v_d, psi_d, gx, gt):
         d = dict(picard_iters=0, picard_resid=0.0, picard_contract=0.0, psidot_mean=0.0)
-        if not (self.cfg.reweight and self.cfg.lam != 0.0):
+        if not (self.cfg.reweight and self.cfg.lam != 0.0 and self.at_ckpt):
             return a, w, d
         a, self._r_prev, k, resid = self._solve(
             a, self._r_prev, self.potential.weights_fn(theta_d, theta_d))

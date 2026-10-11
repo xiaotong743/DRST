@@ -1,0 +1,44 @@
+# Single-mode probe: p1 is one Gaussian at +1, nu is one Gaussian at -1, so the tilt asks
+# the sampler to translate its whole mass rather than reweight between two existing modes.
+# mu* is a SHIFTED p1, not nu: at lam=50 it sits at +0.02 (nu=-1) / -0.89 (nu=-3), sd ~0.5.
+torch_dtype: float64
+device: cpu            # "cuda" for the sweeps; the bitwise gate must stay cpu
+out_dir: experiments/out
+ckpt: experiments/trained_flow_sd0.5_one.pt
+
+sd: 0.5                 # kept at the two-mode setting's value so the two are comparable
+means: [1.0, 1.0]            # p1 is ONE mode at +1: both components coincide
+p1_weights: [1.0, 1.0]
+nu_weights: [1.0, 1.0]
+nu_means: [-1.0, -1.0]
+fig_tag: "_one1"
+xlim: 4.0
+nu_samples: 1000
+nu_seed: 1
+
+h: 7.0710678118654755   # "bandwidth 5.0" = sigma in exp(-d^2/2 sigma^2), so h = 5*sqrt(2)
+lam_star: 50.0          # measured: at the paper's 10 this tilt moves mu* only 0.3-0.5
+kl_bw: 0.2
+
+n: 4000
+steps: 100
+seeds: [4, 5, 6]
+jstar_seeds: 6
+fig2_seed: 4
+record_traj: 600
+resample_fig2: 34
+resample_fig3: 10
+converged_damp: 0.5     # the converged reference curve only; K_FP = 1,3,5 run undamped
+eps_clamp: 20.0
+
+lams: [0.0, 2.0, 4.0, 6.0, 8.0, 10.0, 12.0, 14.0, 16.0, 18.0, 20.0]
+p04_range: 4.0          # Figure 3's caption: baseline strength swept over [0,4]
+
+width: 256
+train_steps: 20000
+train_batch: 8192
+train_lr: 0.002
+
+pool_n: [40, 100]
+pool_M: [2, 4, 8]
+pool_seeds: 8

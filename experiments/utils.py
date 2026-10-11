@@ -8,7 +8,8 @@ them. That is the line to keep when adding to either file.
 import json
 import os
 
-from common import PAPER_MFS, PAPER_PROTOCOL, foldseek_clusters, out_path
+from proteina import (PAPER_MFS, PAPER_PROTOCOL, _ab_features, foldseek_clusters,
+                      out_path)
 
 def steered_pool_diversity(cfg, variant="A", *tags):
     """Table-1-comparable designability and diversity for a steered run.
@@ -136,7 +137,7 @@ def pareto(cfg, *lengths):
                 continue
             c = json.load(open(fc))["native"]
             a = json.load(open(fs))["A"]
-            x0, y0 = c["designable_resampled_pct"], c["clusters_per_designable"]
+            x0, y0 = c["designable_resampled_pct"], div(c)
             x1, y1 = a["designable_resampled_pct"], a["clusters_per_designable"]
             cx.append(x0); cy.append(y0); sx.append(x1); sy.append(y1)
             dd.append(x1 - x0); dv.append(y1 - y0)
@@ -165,7 +166,7 @@ def pareto(cfg, *lengths):
         ax.set_title(f"L = {L}", color=INK, fontsize=9)
         ax.set_xlabel("designable (%)")
         if ax is axes[0]:
-            ax.set_ylabel("diversity  (clusters / designable)")
+            ax.set_ylabel(ylab)
         ax.grid(alpha=.18, lw=.5)
 
     h, lab = axes[0].get_legend_handles_labels()
@@ -204,7 +205,11 @@ def pareto_reward(cfg, *lengths):
     The control points are joined because gamma is itself a knob on this plane -- more sampling
     noise buys reward at the cost of designability -- so the question is the same as in `pareto`:
     does steering reach a point the gamma curve could not? Reward is NOT comparable across
-    panels: h is calibrated per length, so each panel is a different functional.
+    panels: h is calibrated per length, so each panel is a different functional, and eta is one
+    number across all five while **[measured]** steering authority follows ~1/L (1.000 / 0.538 /
+    0.313 / 0.263 / 0.225 relative to L=50). Normalising the feature map instead cannot fix that:
+    rescaling features by c rescales h by the same c, since calibrate_bandwidth sets
+    h = sqrt(median d2), leaving exp(-d^2/h^2) unchanged (h'/h 2.238010 vs c 2.238010 at L=50).
     """
     import matplotlib
     matplotlib.use("Agg")
@@ -389,3 +394,254 @@ def gpu_hours(cfg, *lengths):
         d = D[L]
         print(f"  L={L:<4} unsteered {d['base']:6.2f}  steered {d['full']:6.2f} GPU-h "
               f"({d['full']/d['base']:.2f}x)   advance {d['adv']/d['base']:.2f}x", flush=True)
+
+
+def pareto_fk(cfg, *modes):
+    """Designability against the reward, for FK's three potentials -- the gradient-free analogue
+    of `pareto_reward`, with resample stride on the arrows where that plot has gamma.
+
+    One panel per potential type, one arrow per stride, all at one gamma and one length because
+    that is the controlled comparison: branch A and every FK variant share the reward, the
+    bandwidth, the schedule and the seed, so the ONLY difference is how the log-weights are made.
+    A's point is drawn in every panel as the gradient reference FK is being measured against.
+
+    y is recomputed from the saved clouds rather than read from ab_run's json, because the
+    sweep's jobs run concurrently and each rewrites that file with only its own variant.
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import torch as _t
+    from steering.rewards import ContactRepulsion
+
+    SURF, INK, INK2, MUTED = "#fcfcfb", "#0b0b0b", "#52514e", "#8a8983"
+    BLUE, GREEN, ORANGE = "#2a78d6", "#008300", "#eb6834"
+    plt.rcParams.update({"font.size": 8.5, "axes.edgecolor": MUTED, "axes.labelcolor": INK2,
+                         "xtick.color": INK2, "ytick.color": INK2, "axes.linewidth": .8,
+                         "figure.facecolor": SURF, "axes.facecolor": SURF,
+                         "legend.frameon": False, "axes.spines.top": False,
+                         "axes.spines.right": False})
+    L, tag = cfg["n_res"], cfg.get("tag", "")
+    ev = json.load(open(out_path(cfg, f"steered_eval{tag}_r{L}")))
+    pot = None
+
+    def cell(var, y):
+        """(designable %, y) for one variant, or None if either half is missing."""
+        nonlocal pot
+        f = os.path.join(cfg["out_dir"], f"ab_{var}{tag}_r{L}.pt")
+        if var not in ev or not os.path.exists(f):
+            return None
+        if y == "diversity":
+            return (ev[var]["designable_resampled_pct"], ev[var]["clusters_per_designable"],
+                    ev[var]["n_designable_unique"])
+        d = _t.load(f, map_location="cpu", weights_only=False)
+        if pot is None:
+            pot = _steered_reward(cfg, d["h"])
+        # under the cloud's OWN weights: for FK the weights ARE the steering, so uniform
+        # weights would score a population the sampler does not claim to have produced
+        return (ev[var]["designable_resampled_pct"],
+                float(pot.value_offdiag(d["x"].double(), d["w"].double())),
+                ev[var]["n_designable_unique"])
+
+    from steer_f import FREQS, MODES          # the sweep is defined by the driver, not here
+    modes = modes or MODES
+    # Both axes, always: the reward is what the sampler OPTIMISES, so showing it alone would
+    # report the objective as though it were the result. Foldseek clusters are the held-out one.
+    rlab = {"contact": r"reward  $-w^{\top}Kw$  (off-diagonal)"}.get(
+        cfg.get("reward", "contact"), "steered reward  $-\sum_c m_c^2$  (off-diagonal)")
+    for y, ylab, fsuf in (("reward", rlab, ""),
+                          ("diversity", "diversity  (clusters / designable)", "_div")):
+        _draw_fk(cfg, cell, modes, y, ylab, fsuf, L, tag, plt, FREQS,
+                 (SURF, INK, INK2, MUTED, BLUE, GREEN, ORANGE))
+
+
+def _steered_reward(cfg, h):
+    """The functional the run actually optimised, so the reward axis is that run's objective."""
+    kind = cfg.get("reward", "contact")
+    if kind == "contact":
+        return ContactRepulsion(_ab_features(cfg), h=h)
+    from steering.rewards import ClusterDiversity
+    from proteina import foldseek_labeller, tm_labeller
+    work = os.path.join(cfg["out_dir"], f"paretoscore_{kind}")
+    os.makedirs(work, exist_ok=True)
+    return ClusterDiversity(foldseek_labeller(work) if kind == "foldseek" else tm_labeller())
+
+
+def _draw_fk(cfg, cell, modes, y, ylab, fsuf, L, tag, plt, FREQS, pal):
+    import os
+    SURF, INK, INK2, MUTED, BLUE, GREEN, ORANGE = pal
+    nat, A = cell("native", y), cell("A", y)
+    fig, axes = plt.subplots(1, len(modes), figsize=(3.05 * len(modes), 3.5))
+    axes = [axes] if len(modes) == 1 else list(axes)
+    n_up = n_tot = 0
+    for ax, m in zip(axes, modes):
+        sx, sy, su = [], [], []
+        for q, fq in enumerate(FREQS):
+            s = cell(f"{m}{fq}", y)
+            if not (s and nat):
+                continue
+            sx.append(s[0]); sy.append(s[1]); su.append(s[2])
+            n_tot += 1; n_up += s[1] > nat[1]
+            ax.annotate("", xy=s[:2], xytext=nat[:2], zorder=2,
+                        arrowprops=dict(arrowstyle="-|>,head_width=.17,head_length=.38",
+                                        color=INK2, lw=1.0, alpha=.55, shrinkA=5.0, shrinkB=5.0))
+            f = 0.26 + 0.20 * q                       # stagger along the arrow, not across it
+            ax.annotate(f"{fq}", (nat[0] + f * (s[0] - nat[0]), nat[1] + f * (s[1] - nat[1])),
+                        zorder=5, color=INK2, fontsize=6.5, ha="center", va="center",
+                        bbox=dict(boxstyle="round,pad=.14", fc=SURF, ec="none", alpha=.85))
+        area = lambda u: 14.0 + 0.52 * u          # marker area tracks surviving structures
+        if nat:
+            ax.scatter([nat[0]], [nat[1]], s=area(nat[2]), marker="o", color=BLUE, zorder=4,
+                       edgecolor=SURF, linewidth=1.2, label="unsteered control")
+        if A:
+            ax.scatter([A[0]], [A[1]], s=area(A[2]), marker="s", color=GREEN, zorder=4,
+                       edgecolor=SURF, linewidth=1.2,
+                       label=rf"mean-field A ($\eta$={cfg['eta']}, gradient)")
+        if sx:
+            ax.scatter(sx, sy, s=[area(u) for u in su], marker="D", color=ORANGE, zorder=4,
+                       edgecolor=SURF, linewidth=1.2,
+                       label=rf"FK potential ($\eta$={cfg['eta']}, gradient-free)")
+        ax.set_title(f"'{m}'", color=INK, fontsize=9)
+        ax.set_xlabel("designable (%)")
+        if ax is axes[0]:
+            ax.set_ylabel(ylab)
+        ax.grid(alpha=.18, lw=.5)
+
+    h, lab = [], []
+    for a in axes:                                  # a panel with no FK point lacks that handle
+        for hh, ll in zip(*a.get_legend_handles_labels()):
+            if ll not in lab:
+                h.append(hh); lab.append(ll)
+    fig.tight_layout(rect=(0, 0.10, 1, 0.86))
+    fig.legend(h, lab, loc="lower center", ncol=3, fontsize=7.5, bbox_to_anchor=(.5, 0.005))
+    fig.suptitle(f"FK potential steering at gamma={cfg['temperature']}, L={L}: same reward, "
+                 f"bandwidth, schedule and seed as mean-field A.\nArrows are the resample "
+                 f"stride, marker area the unique designable structures left after resampling. "
+                 f"Up is {y} improving: {n_up} of {n_tot}.",
+                 fontsize=8.5, color=INK2, y=0.99)
+    fname = os.path.join(cfg["out_dir"], f"pareto_fk{fsuf}{tag}.png")
+    fig.savefig(fname, dpi=170, facecolor=SURF, bbox_inches="tight")
+    plt.close(fig)
+    print(f"wrote {fname}", flush=True)
+
+
+def _rarefied(tag, L, n, cache="experiments/out/rarefy_cache.json", reps=4):
+    """Native's own designable pool cut to n. clusters/designable rises as n falls, so a steered
+    point with fewer survivors must be compared against this, not against native's full pool."""
+    import glob
+    import random
+    import shutil
+    from proteina import foldseek_clusters
+    key = f"{tag}:{n}"
+    c = json.load(open(cache)) if os.path.exists(cache) else {}
+    if key in c:
+        return c[key]
+    pool = sorted(glob.glob(f"experiments/out/steered_eval{tag}/native/fs_pool/*.pdb"))
+    n = min(n, len(pool))
+    tmp = f"/tmp/claude-1000372/rf_{os.getpid()}"
+    vals = []
+    for r in range(reps):
+        d = f"{tmp}/pool"
+        shutil.rmtree(d, ignore_errors=True)
+        os.makedirs(d, exist_ok=True)
+        for f in random.Random(r).sample(pool, n):
+            shutil.copy(f, d)
+        vals.append(foldseek_clusters(d, f"{tmp}/t")[0] / n)
+    shutil.rmtree(tmp, ignore_errors=True)
+    c[key] = sum(vals) / len(vals)
+    json.dump(c, open(cache, "w"), indent=1)
+    return c[key]
+
+
+def pareto_cases(cfg, which="length", *lengths):
+    """`pareto`'s axes for the FK campaigns: one panel per length, or per seed at L=100."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    SURF, INK, INK2, MUTED = "#fcfcfb", "#0b0b0b", "#52514e", "#8a8983"
+    BLUE, ORANGE, GREEN = "#2a78d6", "#eb6834", "#008300"
+    plt.rcParams.update({"font.size": 8.5, "axes.edgecolor": MUTED, "axes.labelcolor": INK2,
+                         "xtick.color": INK2, "ytick.color": INK2, "axes.linewidth": .8,
+                         "figure.facecolor": SURF, "axes.facecolor": SURF,
+                         "legend.frameon": False, "axes.spines.top": False,
+                         "axes.spines.right": False})
+    # which cluster count feeds y: the run is scored on the metric it STEERED on, so a
+    # tm-steered campaign is read with n_clusters_tmalign and a foldseek one with n_clusters
+    tm = cfg.get("reward") == "tm"
+    # tmsc steers on the paper's OWN TM-Sc. column (mean pairwise TM, down) rather than on a
+    # cluster count, so it reads mean_tm and the y axis is inverted to keep "up is better".
+    tmsc = cfg.get("reward") == "tmsc"
+    pre, base = (("_tmscL", "_tmscL100") if tmsc else
+                 ("_tmL", "_tmL100") if tm else ("_fsL", "_foldseekL100"))
+    Ls = [int(x) for x in lengths] or [50, 100, 150, 200, 250]
+    CASES = ([(f"L = {L}", base if L == 100 else f"{pre}{L}", L)
+              for L in Ls] if which == "length" else
+             [(f"seed {s}", base if s == 7 else f"{pre}100s{s}", 100)
+              for s in (7, 8, 9, 10)])
+    VAR = ((("max20", ORANGE, "D"), ("add20", GREEN, "s")) if (tm or tmsc)
+           else (("diff80", ORANGE, "D"), ("add20", GREEN, "s")))
+    div = ((lambda e: e["mean_tm"]) if tmsc
+           else (lambda e: e["n_clusters_tmalign"] / e["n_designable_unique"]) if tm
+           else (lambda e: e["clusters_per_designable"]))
+    ylab = ("TM-Sc.  (mean pairwise TM, axis inverted)" if tmsc
+            else "diversity  (TM clusters / designable)" if tm
+            else "diversity  (clusters / designable)")
+    metric = "TM-Sc." if tmsc else "TM-score" if tm else "Foldseek"
+    better = (lambda a, b: a < b) if tmsc else (lambda a, b: a > b)
+    fig, axes = plt.subplots(1, len(CASES), figsize=(2.62 * len(CASES), 3.2))
+    axes = [axes] if len(CASES) == 1 else list(axes)
+    up = tot = 0
+    for ax, (lab, tag, L) in zip(axes, CASES):
+        p_ = out_path(cfg, f"steered_eval{tag}_r{L}")
+        if not os.path.exists(p_):
+            ax.set_title(f"{lab} (missing)", color=MUTED, fontsize=9)
+            continue
+        ev = json.load(open(p_))
+        c = ev["native"]
+        x0, y0 = c["designable_resampled_pct"], div(c)
+        for v, col, mk in VAR:
+            if v not in ev:
+                continue
+            e = ev[v]
+            x1, y1 = e["designable_resampled_pct"], div(e)
+            tot += 1; up += better(y1, y0)
+            ax.annotate("", xy=(x1, y1), xytext=(x0, y0), zorder=2,
+                        arrowprops=dict(arrowstyle="-|>,head_width=.17,head_length=.38",
+                                        color=INK2, lw=1.0, alpha=.55, shrinkA=5.0, shrinkB=5.0))
+            ax.scatter([x1], [y1], s=54, marker=mk, color=col, zorder=4, edgecolor=SURF,
+                       linewidth=1.2, label=f"FK {v}")
+            ax.annotate(f"n={e['n_designable_unique']}", (x1, y1), textcoords="offset points",
+                        xytext=(6, 2), color=INK2, fontsize=6.0, ha="left")
+        ax.scatter([x0], [y0], s=46, marker="o", color=BLUE, zorder=4, edgecolor=SURF,
+                   linewidth=1.2, label="unsteered control")
+        ax.annotate(f"n={c['n_designable_unique']}", (x0, y0), textcoords="offset points",
+                    xytext=(6, 2), color=INK2, fontsize=6.0, ha="left")
+        ax.set_title(lab, color=INK, fontsize=9)
+        ax.set_xlabel("designable (%)")
+        if tmsc:
+            ax.invert_yaxis()
+        if ax is axes[0]:
+            ax.set_ylabel(ylab)
+        ax.grid(alpha=.18, lw=.5)
+    h, lb = [], []
+    for a in axes:
+        for hh, ll in zip(*a.get_legend_handles_labels()):
+            if ll not in lb:
+                h.append(hh); lb.append(ll)
+    fig.tight_layout(rect=(0, 0.11, 1, 0.86))
+    fig.legend(h, lb, loc="lower center", ncol=3, fontsize=7.5, bbox_to_anchor=(.5, 0.005))
+    fig.suptitle(
+        f"FK potential steering on {metric}{'' if tmsc else ' cluster'} diversity, gamma=0.45, "
+        f"{'L=100' if which == 'seed' else 'seed 7'}."
+        f"  Up is diversity improving: {up} of {tot}.\n" + (
+            "mean pairwise TM is a U-statistic, so unlike clusters/designable it does not rise "
+            "as n falls; `n=` is annotated as context, not as a correction."
+            if tmsc else
+            "clusters/designable rises as n falls, so "
+            "`n=` is annotated: a variant holding fewer structures scores higher for that alone."),
+        fontsize=8.5, color=INK2, y=0.99)
+    fname = os.path.join(cfg["out_dir"],
+                         f"pareto_fk{'_tmsc' if tmsc else '_tm' if tm else ''}_by_{which}.png")
+    fig.savefig(fname, dpi=170, facecolor=SURF, bbox_inches="tight")
+    plt.close(fig)
+    print(f"wrote {fname}", flush=True)

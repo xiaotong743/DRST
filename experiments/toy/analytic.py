@@ -1,19 +1,5 @@
-"""Closed-form analytic testbed: a reward whose tilted target is known exactly.
-
-Library code, not an experiment. Three experiments scripts imported this from experiments/, which is why
-it now lives here.
-
-The model is the 1-D linear-Gaussian flow x_t = t x_1 + (1-t) x_0 with x_0, x_1 ~ N(0,1), for
-which the denoiser, the velocity and the score are all closed form. The reward is mean-matching,
-R(pi) = -(lam/2)(mean(pi) - c)^2, chosen because every Algorithm-3 and Algorithm-4 ingredient is
-then analytic AND the tilted target has the closed form
-
-    m* = lam c / (1 + lam),
-
-so Algorithm 1 can be scored against an exact number rather than against another implementation.
-It is also the reward for which the Picard contraction factor is largest -- rho = lam t^3 / s2(t)
--> lam as t -> 1 -- which makes it the hard case for Algorithm 4 and the clean case for
-Algorithm 3, whose direct solve carries no contraction requirement.
+"""
+Closed-form analytic test
 """
 import numpy as np
 

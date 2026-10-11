@@ -1,8 +1,7 @@
-"""Reproduction driver: the paper's 1-D experiment (arXiv:2608.08770 sec 4.1) and Proteina's
-Table-1 gamma sweep. Configured from YAML, see DRST/configs/.
+"""Proteina driver: the Table-1 gamma sweep, designability and the pointwise/binning probes.
 
-Steering experiments live in experiments/steer_a.py; shared scaffolding in experiments/common.py;
-algorithms in src/steering/.
+Driven by configs/proteina*.yaml. The 1-D reproduction is experiments/run_toy.py; steering
+branches are steer_a.py and steer_f.py; shared scaffolding is proteina.py; algorithms src/steering/.
 """
 import json
 import os
@@ -11,202 +10,10 @@ import sys
 import torch
 import yaml
 
-from common import (OUR_PROTOCOL, PAPER_MFS, PAPER_PROTOCOL, _pairwise_tm, _proteina,
+from proteina import (OUR_PROTOCOL, PAPER_MFS, PAPER_PROTOCOL, _pairwise_tm, _proteina,
                     foldseek_clusters, out_path)
-from steering.smc import normalise
-from steering.rewards import MMD, Pointwise
-from steering.steerer import Config, FKConfig, FKSteerer, multibatch, steer
-from toy import (GaussianMixtureFlow, TrainedFlow, grid_mu_star, objective_paper,
-                 sample_grid, w1_to_grid)
-
-
-def _gen(seed):
-    """Generator on the default device; `torch.Generator()` is always CPU."""
-    return torch.Generator(device=torch.get_default_device()).manual_seed(seed)
-
-
-def base_model(cfg, sched="const"):
-    """p1: what the flow model is trained to sample, and the exact denoiser for reference."""
-    return GaussianMixtureFlow(eps_mode=sched, eps_clamp=cfg["eps_clamp"], means=tuple(cfg["means"]),
-                               stds=(cfg["sd"], cfg["sd"]), weights=tuple(cfg["p1_weights"]))
-
-def trained(cfg, sched="const"):
-    """**[paper]** C.1 trains a flow-matching model; the exact denoiser is a different function,
-    so the reproduction uses the trained one."""
-    m = TrainedFlow(base_model(cfg, sched), width=cfg["width"], eps_mode=sched,
-                    eps_clamp=cfg["eps_clamp"])
-    m.net.load_state_dict(torch.load(cfg["ckpt"], weights_only=True))
-    for p in m.net.parameters():
-        p.requires_grad_(False)
-    return m
-
-def target_sample(cfg):
-    """nu: the tilting measure. Same means, weights reversed."""
-    tgt = GaussianMixtureFlow(means=tuple(cfg["means"]), stds=(cfg["sd"], cfg["sd"]),
-                              weights=tuple(cfg["nu_weights"]))
-    return tgt.sample_p1(cfg["nu_samples"],
-                         _gen(cfg["nu_seed"])).reshape(-1, 1)
-
-def _series(cfg):
-    """Every curve in Figure 3, as Config kwargs from the axis value x."""
-    return {
-        "kfp1": lambda x: dict(lam=x, k_fp=1, damp=1.0),
-        "kfp3": lambda x: dict(lam=x, k_fp=3, damp=1.0),
-        "kfp5": lambda x: dict(lam=x, k_fp=5, damp=1.0),
-        "kfp50": lambda x: dict(lam=x, k_fp=50, damp=cfg["converged_damp"]),
-        "implicit": lambda x: dict(lam=x, psidot_solver="implicit"),
-        "gradient": lambda x: dict(lam=x, reweight=False),
-        "gradient_p04": lambda x: dict(lam=x, reweight=False,
-                                       steer_coeff=cfg["p04_range"] / cfg["lams"][-1]
-                                       * cfg["lam_star"]),
-    }
-
-
-def _fk_series(cfg):
-    """Gradient-free FK potential steering on the SAME reward. Deliberately NOT in `_series`:
-    verify.py re-runs the full sweep and compares key-for-key against the snapshot."""
-    return {"fk": lambda x: dict(lam=x, potential_type="diff")}
-
-
-# ---------------------------------------------------------------- stages
-
-def train(cfg):
-    if os.path.exists(cfg["ckpt"]):
-        print(f"{cfg['ckpt']} exists; skipping", flush=True)
-        return
-    m = TrainedFlow(base_model(cfg), width=cfg["width"], eps_mode="const",
-                    eps_clamp=cfg["eps_clamp"]).fit(
-        steps=cfg["train_steps"], batch=cfg["train_batch"], lr=cfg["train_lr"], seed=0,
-        verbose=True)
-    torch.save(m.net.state_dict(), cfg["ckpt"])
-    ref, g = base_model(cfg), _gen(1)
-    print(f"\nvelocity error vs the exact denoiser (sd={cfg['sd']:g})", flush=True)
-    for t in (0.1, 0.3, 0.5, 0.7, 0.9, 0.99):
-        x = torch.randn(4000, 1, generator=g)
-        tt = torch.full((4000,), t)
-        _, ve = ref.endpoint(x, tt)
-        _, vt = m.endpoint(x, tt)
-        e, s = float((vt - ve).abs().mean()), float(ve.abs().mean())
-        print(f"  t={t:4.2f}  mean|dv| {e:.4f}  rel {e / s:.4f}", flush=True)
-    print(f"wrote {cfg['ckpt']}", flush=True)
-
-def fig2(cfg):
-    """Trajectories and final measures at lam*, sigma_t = 1 (the paper's Figure 2)."""
-    n, lam_star = cfg["n"], cfg["lam_star"]
-    m, y = trained(cfg, "const"), target_sample(cfg)
-    grid, q = grid_mu_star(base_model(cfg), y, lam_star, cfg["h"])
-    pot = MMD(y, cfg["h"])
-    unif = torch.full((n,), 1.0 / n)
-    nu = GaussianMixtureFlow(means=tuple(cfg["means"]), stds=(cfg["sd"], cfg["sd"]),
-                             weights=tuple(cfg["nu_weights"]))
-    out = {"grid": grid.tolist(), "mu_star": q.tolist(), "sd": cfg["sd"], "h": cfg["h"], "N": n,
-           "p1": torch.softmax(base_model(cfg).log_p1(grid), 0).tolist(),
-           "nu": torch.softmax(nu.log_p1(grid), 0).tolist()}
-    out["w1_floor"] = sum(
-        w1_to_grid(sample_grid(grid, q, n, _gen(s)), unif, grid, q)
-        for s in range(8)) / 8.0
-    runs = {"base": dict(lam=0.0, resample_every=0),
-            # **[paper]** C.1: "3 fixed-point iterations for the visualisation"
-            "meanfield": dict(lam=lam_star, k_fp=3, damp=1.0,
-                              resample_every=cfg["resample_fig2"]),
-            "gradient": dict(lam=lam_star, reweight=False, resample_every=0)}
-    for k, kw in runs.items():
-        o = steer(m, pot, Config(nsteps=cfg["steps"], seed=cfg["fig2_seed"],
-                                 record_traj=cfg["record_traj"], **kw), n)
-        w = o["w"] if kw.get("reweight", True) else unif
-        out[f"x_{k}"], out[f"w_{k}"] = o["x"].reshape(-1).tolist(), w.reshape(-1).tolist()
-        out[f"traj_{k}"], out["ts"] = o["traj"].tolist(), o["ts"].tolist()
-        out[f"w1_{k}"] = w1_to_grid(o["x"], w, grid, q)
-        print(f"  {k:10s} W1 to mu* = {out[f'w1_{k}']:.4f}", flush=True)
-    json.dump(out, open(out_path(cfg, "fig2"), "w"))
-    print(f"wrote {out_path(cfg, 'fig2')}  (W1 floor {out['w1_floor']:.4f})", flush=True)
-
-def fig3(cfg, sched, only=None):
-    """Objective gap vs steering strength, one noise schedule (the paper's Figure 3)."""
-    n, lam_star = cfg["n"], cfg["lam_star"]
-    m, y = trained(cfg, sched), target_sample(cfg)
-    grid, q = grid_mu_star(base_model(cfg), y, lam_star, cfg["h"])
-    pot = MMD(y, cfg["h"])
-    unif = torch.full((n,), 1.0 / n)
-    fn = out_path(cfg, "fig3", f"_{sched}")
-    out = json.load(open(fn)) if (only and os.path.exists(fn)) else {}
-    out.update(sd=cfg["sd"], h=cfg["h"], N=n, steps=cfg["steps"], sched=sched,
-               lams=cfg["lams"], lam_star=lam_star)
-    out["J_star"] = sum(
-        objective_paper(sample_grid(grid, q, n, _gen(s)), unif,
-                        base_model(cfg), y, lam_star, cfg["h"], cfg["kl_bw"])
-        for s in range(cfg["jstar_seeds"])) / cfg["jstar_seeds"]
-    print(f"[{sched}] J(mu*) = {out['J_star']:.5f}", flush=True)
-    series = {**_series(cfg), **_fk_series(cfg)}
-    for name in ([only] if only else _series(cfg)):
-        spec = series[name]
-        J, W1 = [], []
-        for lam in cfg["lams"]:
-            js, ws = [], []
-            for sd in cfg["seeds"]:
-                kw = dict(nsteps=cfg["steps"], seed=sd,
-                          resample_every=(0 if name.startswith("gradient")
-                                          else cfg["resample_fig3"]),
-                          **spec(lam))
-                dev = torch.get_default_device()
-                o = (FKSteerer(m, pot, FKConfig(**kw), n, device=dev).run()
-                     if "potential_type" in kw
-                     else steer(m, pot, Config(**kw), n, device=dev))
-                w = o["w"] if not name.startswith("gradient") else unif
-                js.append(objective_paper(o["x"], w, base_model(cfg), y, lam_star, cfg["h"],
-                                          cfg["kl_bw"]))
-                ws.append(w1_to_grid(o["x"], w, grid, q))
-            J.append(sum(js) / len(js)); W1.append(sum(ws) / len(ws))
-            print(f"  {name:13s} lam={lam:5.1f} gap={J[-1] - out['J_star']:+9.5f} "
-                  f"W1={W1[-1]:.4f}", flush=True)
-        out[f"J_{name}"], out[f"W1_{name}"] = J, W1
-    json.dump(out, open(fn, "w"))
-    print(f"wrote {fn}", flush=True)
-
-def pooling(cfg):
-    """Algorithm 2: does pooling the measure across batches beat the same number of INDEPENDENT
-    samples?
-    """
-    from dataclasses import replace
-    lam = cfg["lam_star"]
-    m, y = trained(cfg, "const"), target_sample(cfg)
-    grid, q = grid_mu_star(base_model(cfg), y, lam, cfg["h"])
-    pot = MMD(y, cfg["h"])
-    out = {"sd": cfg["sd"], "h": cfg["h"], "lam": lam, "nseeds": cfg["pool_seeds"], "rows": []}
-    print(f"{cfg['pool_seeds']} seeds per cell; mean +- sd of W1 to mu*", flush=True)
-    print(f"{'N':>5} {'M':>3} {'total':>6}  {'pooled':>18} {'independent':>18}  {'ratio':>6}",
-          flush=True)
-    for n in cfg["pool_n"]:
-        for M in cfg["pool_M"]:
-            wp, wi = [], []
-            for s in range(cfg["pool_seeds"]):
-                c = Config(nsteps=cfg["steps"], lam=lam, k_fp=50, damp=cfg["converged_damp"],
-                           resample_every=cfg["resample_fig3"], seed=100 * s)
-                wp.append(w1_to_grid(*(lambda o: (o["x"], o["w"]))(
-                    multibatch(m, pot, c, n, M)), grid, q))
-                xs, as_ = [], []
-                for b in range(M):
-                    ob = steer(m, pot, replace(c, seed=c.seed + b), n)
-                    xs.append(ob["x"]); as_.append(ob["a"])
-                wi.append(w1_to_grid(torch.cat(xs), normalise(torch.cat(as_)), grid, q))
-            P, I = torch.tensor(wp), torch.tensor(wi)
-            row = dict(n=n, M=M, pooled=float(P.mean()), pooled_sd=float(P.std()),
-                       indep=float(I.mean()), indep_sd=float(I.std()),
-                       ratio=float(P.mean() / I.mean()), wins=int((P < I).sum()))
-            out["rows"].append(row)
-            print(f"{n:5d} {M:3d} {n * M:6d}  {row['pooled']:8.4f}+-{row['pooled_sd']:.4f}"
-                  f"{'':<4} {row['indep']:8.4f}+-{row['indep_sd']:.4f}{'':<4} "
-                  f"{row['ratio']:6.3f}   pooled wins {row['wins']}/{cfg['pool_seeds']}",
-                  flush=True)
-    unif = torch.full((cfg["n"],), 1.0 / cfg["n"])
-    out["floor"] = sum(
-        w1_to_grid(sample_grid(grid, q, cfg["n"], _gen(s)), unif,
-                   grid, q) for s in range(6)) / 6.0
-    print(f"\nW1 Monte-Carlo floor at N={cfg['n']}: {out['floor']:.4f}", flush=True)
-    json.dump(out, open(out_path(cfg, "pooling"), "w"), indent=1)
-
-def plot(cfg):
-    figures(lambda part, tag="": out_path(cfg, part, tag), cfg["sd"])
+from steering.rewards import Pointwise
+from steering.steerer import Config, steer
 
 
 # ---------------------------------------------------------------- Proteina stages
@@ -634,11 +441,10 @@ def gamma_table(cfg, inference_dir="proteina/inference"):
     json.dump(rows, open(out_path(cfg, "gamma_table"), "w"), indent=1)
 
 import steer_a as _a                                                          # noqa: E402
-from common import calibrate, steered_eval                                    # noqa: E402
-from common import mem_probe                                                  # noqa: E402
+from proteina import calibrate, steered_eval                                    # noqa: E402
+from proteina import mem_probe                                                  # noqa: E402
 
-STAGES = {"train": train, "fig2": fig2, "fig3": fig3, "pooling": pooling, "plot": plot,
-          "proteina_pointwise": proteina_pointwise, "binning_gradient": binning_gradient,
+STAGES = {"proteina_pointwise": proteina_pointwise, "binning_gradient": binning_gradient,
           "designability": designability, "gamma_diversity": gamma_diversity,
           "gamma_table": gamma_table, "surrogate_check": surrogate_check,
           "mem_probe": lambda cfg, *s: mem_probe(cfg, *s, mk_cfg=_a.mk_cfg,
@@ -648,159 +454,10 @@ STAGES = {"train": train, "fig2": fig2, "fig3": fig3, "pooling": pooling, "plot"
           "ab_run": lambda cfg, *w: _a.run(cfg, *w),
           "steered_pool_diversity": _a.steered_pool_diversity}
 
-# ------------------------------------------------------- figures
-SURF, INK, INK2, MUTED = "#fcfcfb", "#0b0b0b", "#52514e", "#8a8983"
-BLUE, GREEN, ORANGE, BROWN = "#2a78d6", "#008300", "#eb6834", "#9c6644"
-
-RAMP = ["#86b6ef", "#2a78d6", "#104281"]
-# Figure 3's curves. Both gradient-steering parameterisations are shown as peers: only the
-# product coeff*lam enters, so gradient_p04 is `gradient` compressed 4x, and the 4 is the paper's
-# display choice rather than a derived constant.
-
-F3 = [("kfp1", RAMP[0], "o", (0, (4, 2)), r"Mean-field, $K_{fp}=1$"),
-      ("kfp3", RAMP[1], "^", (0, (5, 1.5, 1, 1.5)), r"Mean-field, $K_{fp}=3$"),
-      ("kfp5", RAMP[2], "s", (0, (1, 1.6)), r"Mean-field, $K_{fp}=5$"),
-      ("kfp50", GREEN, "D", "-", r"Mean-field, converged ($K_{fp}=50$, damp .5)"),
-      ("implicit", "#7a3fa0", "P", (0, (6, 1.5)), r"Mean-field, Algorithm 3 (implicit)"),
-      ("gradient", ORANGE, "o", "-", r"Gradient steering, eq (11): $\varepsilon_t$"),
-      ("gradient_p04", BROWN, "v", "-", r"Gradient steering, strength $[0,4]$ (paper's Fig 3)")]
-
-F3_FK = ("fk", "#c81e78", "X", (0, (2, 1)), r"FK potential steering, gradient-free ('diff')")
-
-def _style():
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-    plt.rcParams.update({"font.size": 9, "axes.edgecolor": MUTED, "axes.labelcolor": INK2,
-                         "xtick.color": INK2, "ytick.color": INK2, "axes.linewidth": .8,
-                         "figure.facecolor": SURF, "axes.facecolor": SURF,
-                         "legend.frameon": False, "axes.spines.top": False,
-                         "axes.spines.right": False})
-    return plt
-
-def figures(out_path, sd):
-    import numpy as np
-    plt = _style()
-    from matplotlib.lines import Line2D
-
-    # ---- Figure 2: histogram strip over trajectories, t on the vertical axis
-    f2 = json.load(open(out_path("fig2")))
-    grid = np.array(f2["grid"]); ts = np.array(f2["ts"]); dx = grid[1] - grid[0]
-    fig = plt.figure(figsize=(12.6, 4.6), facecolor=SURF)
-    gs = fig.add_gridspec(2, 3, height_ratios=[1, 2.4], hspace=.04, wspace=.12,
-                          left=.06, right=.985, top=.86, bottom=.17)
-    bins = np.linspace(-4, 4, 61)
-    for c, (key, title) in enumerate([("base", "Base Dynamics"),
-                                      ("gradient", "Gradient Steering"),
-                                      ("meanfield", "Mean-Field Steering")]):
-        ah = fig.add_subplot(gs[0, c]); at = fig.add_subplot(gs[1, c], sharex=ah)
-        for dens, col in ((f2["p1"], BLUE), (f2["nu"], GREEN)):
-            ah.hist(np.random.default_rng(0).choice(grid, size=20000, p=np.array(dens)),
-                    bins=bins, density=True, color=col, alpha=.55, lw=0)
-        x, w = np.array(f2[f"x_{key}"]), np.array(f2[f"w_{key}"])
-        ah.hist(x, bins=bins, weights=w / w.sum() / np.diff(bins)[0], color=ORANGE, alpha=.65, lw=0)
-        ah.plot(grid, np.array(f2["mu_star"]) / dx, color=INK, lw=1.8)
-        ah.set_title(title, color=INK, fontsize=10)
-        ah.set_yticks([]); ah.tick_params(labelbottom=False)
-        ah.spines["left"].set_visible(False)
-        ah.text(.02, .86, f"$W_1$ to $\\mu^*$ = {f2[f'w1_{key}']:.3f}", transform=ah.transAxes,
-                fontsize=7.6, color=INK2, va="top")
-        at.plot(np.array(f2[f"traj_{key}"]), ts[:, None], color=ORANGE, lw=.4, alpha=.28)
-        at.set_xlim(-4, 4); at.set_ylim(0, 1); at.set_xlabel("x")
-        (at.set_ylabel("t") if c == 0 else at.tick_params(labelleft=False))
-    fig.legend(handles=[Line2D([], [], color=BLUE, lw=7, alpha=.55),
-                        Line2D([], [], color=GREEN, lw=7, alpha=.55),
-                        Line2D([], [], color=ORANGE, lw=7, alpha=.65),
-                        Line2D([], [], color=INK, lw=1.8)],
-               labels=[r"Base Measure $p_1$", r"Tilting Measure $\nu$", r"Generated $\mu$",
-                       r"True $\mu^*$"],
-               loc="lower center", ncol=4, fontsize=9, bbox_to_anchor=(.52, .015))
-    fig.suptitle(
-        r"Figure 2 reproduced: $\lambda^*=10$, $\sigma_t=1$, $K_{FP}=3$ undamped, trained flow "
-        r"model, mixture component sd " + f"{sd:g}." + "\n"
-        r"Gradient steering is eq (11): $\varepsilon_t\nabla_x\Psi_t$ at the same $\lambda$, "
-        r"with no (12b) reweighting.  $W_1$ Monte-Carlo floor "
-        + f"{f2['w1_floor']:.3f}.", fontsize=8.5, color=INK2)
-    fig.savefig("fig2_repro.png", dpi=170, facecolor=SURF)
-    print("wrote fig2_repro.png", flush=True)
-
-    # ---- Figure 3: objective gap vs steering strength, one panel per noise schedule
-    scheds = [("const", r"$\sigma_t = 1$"), ("sqrt1mt", r"$\sigma_t = \sqrt{1-t}$"),
-              ("memoryless", r"$\sigma_t = \sqrt{2(1-t)/t}$")]
-
-    def draw_fig3(series, fname, extra_note=""):
-        fig, axes = plt.subplots(1, 3, figsize=(12.6, 3.9), constrained_layout=True,
-                                 facecolor=SURF)
-        for ax, (sch, lab) in zip(axes, scheds):
-            d = json.load(open(out_path("fig3", f"_{sch}")))
-            lams = np.array(d["lams"])
-            ax.axvline(d["lam_star"], color=INK, lw=1.1, ls=(0, (3, 2)))
-            for key, col, mk, ls, nm in series:
-                if f"J_{key}" not in d:
-                    continue
-                raw = np.array(d[f"J_{key}"]) - d["J_star"]
-                g = np.maximum(raw, 1e-4)
-                ax.plot(lams, g, color=col, lw=1.6, ls=ls, marker=mk, ms=4, label=nm)
-                neg = raw < 1e-4
-                if neg.any():
-                    ax.plot(lams[neg], g[neg], ls="none", marker=mk, ms=6, mfc="none",
-                            mec=col, mew=1.2)
-            ax.set_yscale("log"); ax.set_title(lab, color=INK, fontsize=10)
-            ax.set_xlabel(r"Steering strength $\lambda$")
-            if ax is axes[0]:
-                ax.set_ylabel(r"$J(\mu)-J(\mu^*)$")
-        h, l = axes[0].get_legend_handles_labels()
-        h += [Line2D([], [], color=INK, lw=1.1, ls=(0, (3, 2)))]; l += [r"True $\lambda^*$"]
-        fig.legend(h, l, loc="lower center", ncol=3, fontsize=8.5, bbox_to_anchor=(.5, -.28))
-        fig.suptitle(
-            r"Figure 3 reproduced. $\lambda^*=10$, reward bandwidth $\sigma=5$ ($h=5\sqrt{2}$), "
-            r"mixture component sd " + f"{sd:g}" + r", trained flow model, $N=" + f"{f2['N']}"
-            + r"$." "\n"
-            r"Gradient steering is eq (11): the SAME steering drift as the mean-field runs at "
-            r"every $\lambda$, differing only by (12b) reweighting.  Brown is the same family at "
-            r"the paper's display range $[0,4]$." "\n"
-            r"Hollow markers sit below the KL-estimator floor.  $J(\mu^*)$ uses the same "
-            r"estimator on $N$ draws from a grid-solved $\mu^*$, so its plug-in bias cancels."
-            + extra_note,
-            fontsize=8.5, color=INK2, y=1.30)
-        fig.savefig(fname, dpi=170, facecolor=SURF, bbox_inches="tight")
-        plt.close(fig)
-        print(f"wrote {fname}", flush=True)
-
-    draw_fig3(F3, "fig3_repro.png")
-    if any("J_fk" in json.load(open(out_path("fig3", f"_{s_}"))) for s_, _ in scheds):
-        draw_fig3(F3 + [F3_FK], "fig3_newfk.png",
-                  "\nPink: FK potential steering -- gradient-free, weights from a potential of "
-                  "the reward VALUE, resampled every 10 steps.  This objective's $\\psi$ is "
-                  "measure-dependent, which FK takes unchanged:\n'diff' telescopes to "
-                  r"$\lambda\psi(x_1,\mu_T)$, so its weights solve the SAME fixed point "
-                  r"$\mu \propto p_1 e^{\lambda\psi(\cdot,\mu)}$ as the mean-field runs.")
-
-    # ---- Algorithm 2: does pooling the measure across batches help?
-    if os.path.exists(out_path("pooling_mb")):
-        d = json.load(open(out_path("pooling_mb")))
-        fig, ax = plt.subplots(figsize=(5.4, 3.6), constrained_layout=True, facecolor=SURF)
-        for (n, row), col, mk in zip(sorted(d["w1"].items(), key=lambda kv: int(kv[0])),
-                                     (RAMP[0], RAMP[2]), ("o", "s")):
-            Ms = sorted(int(k) for k in row)
-            ax.plot(Ms, [row[str(M)] for M in Ms], color=col, marker=mk, lw=1.6,
-                    label=f"$N={n}$ per batch")
-        ax.axhline(d["w1_floor"], color=MUTED, lw=1.0, ls=(0, (3, 2)),
-                   label=f"MC floor at $N=4000$ ({d['w1_floor']:.3f})")
-        ax.set_xscale("log", base=2); ax.set_yscale("log")
-        ax.set_xlabel("batches $M$"); ax.set_ylabel(r"$W_1$ to $\mu^*$")
-        ax.set_title("Algorithm 2: pooling the measure across batches", color=INK, fontsize=10)
-        ax.legend(fontsize=8)
-        fig.savefig("figmb_repro.png", dpi=170, facecolor=SURF)
-        print("wrote figmb_repro.png", flush=True)
-
-
 def main(argv):
     if len(argv) < 2:
         raise SystemExit(__doc__)
     cfg = yaml.safe_load(open(argv[0]))
-    # The toy stages need float64: float32 moved the Figure-2 positions by 1.15e-5 against the
-    # stored reference.
     torch.set_default_dtype(getattr(torch, cfg.get("torch_dtype", "float64")))
     torch.set_default_device(cfg.get("device", "cpu"))   # cpu keeps every result bitwise
     stage, rest = argv[1], argv[2:]

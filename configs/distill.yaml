@@ -1,0 +1,37 @@
+# Distilling the trained 1-D flow into a strong stochastic flow map (arXiv:2606.01086).
+device: cuda
+mode: teacher_interp   # ssfm | teacher_interp | teacher_sim
+n_sub: 32
+out_dir: experiments/out
+ckpt: experiments/trained_flow_sd0.5.pt
+out: experiments/out/flowmap_sd0.5.pt
+
+# the teacher, exactly as configs/simulation.yaml builds it
+sd: 0.5
+means: [-1.0, 1.0]
+p1_weights: [1.0, 3.0]
+width: 256       # the TEACHER net, as configs/simulation.yaml has it
+eps_clamp: 20.0
+eps_mode: const
+
+seed: 11
+n_levy: 3         # W, H, K -- the first three shifted-Legendre coefficients
+fm_width: 256     # the flow map net
+dt: 0.001
+h_max: 1.0
+t_eps: 0.00001
+clip: 10.0
+levels_coarse: 10  # 1024-step reference for 1..16 steps  (sde.py:547)
+levels_fine: 12    # 4096-step reference for 32..512 steps (sde.py:672-673)
+batch: 4096
+iters: 100000
+lr: 0.0003
+ema: 0.999
+eta: 0.75         # the value SSFM uses (sde.py:256); their SDE experiment splits the batch and
+                  # weights the two means exactly as we do. ssfm/losses.py additionally learns an
+                  # uncertainty weight per term -- we do NOT have that, so do not credit it here.
+
+log_every: 200
+eval_n: 4000
+steps_coarse: [1, 2, 4, 8, 16]
+steps_fine: [32, 64, 128, 256, 512]   # the fitted regime

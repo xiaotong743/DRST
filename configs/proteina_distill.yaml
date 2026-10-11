@@ -1,0 +1,39 @@
+# Distil Proteina's OWN reverse SDE into a strong stochastic flow map (arXiv:2606.01086).
+# The teacher block is configs/steer_f.yaml's verbatim EXCEPT temperature: the target here is the
+# published sampler itself, gamma = 1, not the gamma = 0.45 the steering campaigns run at.
+torch_dtype: float32
+out_dir: experiments/out
+ckpt: /lustre/groups/ml01/workspace/xiaotong.fu/playground/proteina_data/ckpts/proteina_v1.1_DFS_200M_tri.ckpt
+data_path: /lustre/groups/ml01/workspace/xiaotong.fu/playground/proteina_data
+
+gt_mode: "1/t"
+gt_p: 1.0
+gt_clamp_val: null
+vf_tail_t: 0.99         # Proteina's own ODE tail, r3n_fm.py:523
+steps: 400
+temperature: 1.0        # gamma = 1: the original SDE, no tempering
+soft_binning: true
+
+n_res: 100              # every timing measurement in this repo is L=100
+n: 16                   # chains carried through training
+seed: 7
+
+init: exp               # "exp" = the OU baseline, stable at every K; "em" = the gate's strawman
+n_levy: 3               # W, H, K -- the first three shifted-Legendre coefficients
+fm_width: 128
+dt: 0.0025              # 1/400, the teacher's own step
+h_max: 0.125
+t_eps: 0.00001
+eta: 0.75               # SSFM's split: 75% matching, 25% semigroup
+ema: 0.999
+lr: 0.0003
+clip: 10.0
+iters: 15000            # **[measured]** 1.5 s/step at fwd/it 1.45, so ~6.3 h inside the 8 h wall.
+                        # fwd/it is 1.45 not the designed 1.03 because a chain reset costs a FULL
+                        # batched forward, and with n=16 something resets in ~45% of steps.
+log_every: 100
+
+out: experiments/out/pt_flowmap.pt
+eval_n: 8
+levels_coarse: 10       # 1024-step reference in u
+steps_coarse: [1, 4, 8, 16, 64, 128, 256]

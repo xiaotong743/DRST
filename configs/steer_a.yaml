@@ -16,11 +16,6 @@ n: 100            # the paper's samples per length
 n_res: 64
 seed: 7
 eta: 5            
-# Length normalisation for eta. **[measured]** authority ~ 1/L, so a fixed eta is a
-# DIFFERENT effective strength at each length. Set to a reference length (e.g. 50) to
-# make eta mean the same thing everywhere: eta_eff = eta * n_res / eta_ref_len.
-# null = raw eta, which is what every result currently on disk used.
-eta_ref_len: null
 k_fp: 3
 damp: 1.0
 endpoint_lag: literal

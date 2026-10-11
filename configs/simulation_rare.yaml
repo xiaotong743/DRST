@@ -1,0 +1,43 @@
+# p1 = 0.05 N(-1) + 0.95 N(+1) and nu = 0.95 N(-1) + 0.05 N(+1): mirror images.
+# Each measure is 95% where the other is 5%, so the tilt must move nearly all mass across.
+torch_dtype: float64
+device: cpu            # "cuda" for the sweeps; the bitwise gate must stay cpu
+out_dir: experiments/out
+ckpt: experiments/trained_flow_sd0.5_rare.pt
+
+sd: 0.5                 # "unit variance" is the mixture's: sd^2 + 0.75 = 1
+means: [-1.0, 1.0]
+p1_weights: [0.05, 0.95]   # the left mode is RARE in the base, so the tilt must
+                           # move mass into a mode p1 barely samples
+nu_weights: [0.95, 0.05]   # mirrored: nu is 95% on the mode p1 gives 5%, so the two
+                           # measures overlap ONLY in each other's rare component
+nu_samples: 1000
+nu_seed: 1
+
+h: 7.0710678118654755   # "bandwidth 5.0" = sigma in exp(-d^2/2 sigma^2), so h = 5*sqrt(2)
+lam_star: 10.0
+kl_bw: 0.2
+
+n: 4000
+steps: 100
+seeds: [4, 5, 6]
+jstar_seeds: 6
+fig_tag: "_rare"
+fig2_seed: 4
+record_traj: 600
+resample_fig2: 34
+resample_fig3: 10
+converged_damp: 0.5     # the converged reference curve only; K_FP = 1,3,5 run undamped
+eps_clamp: 20.0
+
+lams: [0.0, 2.0, 4.0, 6.0, 8.0, 10.0, 12.0, 14.0, 16.0, 18.0, 20.0]
+p04_range: 4.0          # Figure 3's caption: baseline strength swept over [0,4]
+
+width: 256
+train_steps: 20000
+train_batch: 8192
+train_lr: 0.002
+
+pool_n: [40, 100]
+pool_M: [2, 4, 8]
+pool_seeds: 8

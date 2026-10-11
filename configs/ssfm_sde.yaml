@@ -1,0 +1,27 @@
+# SSFM sec 4.1, the non-linear SDE: dx = (x - x^3) dt + sqrt(beta(t)) dW, beta = 0.1 + 19.9 t.
+# Values from their experiments/sde/sde.py unless marked.
+out_dir: experiments/out
+out: experiments/out/ssfm_sde.pt
+device: cuda
+
+n_coeffs: 3        # W, H, K
+width: 64          # sde.py:542-543, with mlp_depth 3
+depth: 3
+batch: 4096        # sde.py:534
+iters: 100000
+lr: 0.001          # cosine decay
+clip: 10.0
+ema: 0.999
+eta: 0.75          # 75% matching / 25% semigroup
+dt: 0.001
+h_max: 1.0
+t_eps: 0.00001
+n_sub: 32          # substeps to reach s
+seed: 0
+log_every: 1000
+
+eval_n: 4096
+levels_coarse: 10  # 2**10 = 1024-step reference
+steps_coarse: [1, 2, 4, 8, 16]
+levels_fine: 12    # 2**12 = 4096-step reference
+steps_fine: [32, 64, 128, 256, 512]

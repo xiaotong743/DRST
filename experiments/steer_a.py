@@ -24,7 +24,7 @@ from dataclasses import dataclass
 import torch
 
 from steering.steerer import Config, Steerer
-from common import calibrate, main, resolve_h, run_variants, steered_eval, timing_probe
+from proteina import calibrate, main, resolve_h, run_variants, steered_eval, timing_probe
 from utils import gpu_hours, pareto, pareto_reward, steered_pool_diversity
 
 
@@ -61,9 +61,8 @@ class SteererA(Steerer):
                 f"the steering coefficient and would discard the temperature.")
 
     def coeffs(self, t_val):
-        g = self.model.eps(t_val)
-        if t_val > self.cfg.vf_tail_t:
-            g = 0.0
+        """Only the steering coefficient differs: tau scales it, the score keeps g."""
+        g, _ = super().coeffs(t_val)
         return g, float(self.cfg.temperature) * g
 
     def noise_std(self, t_val, dt_t):
@@ -76,34 +75,10 @@ class SteererA(Steerer):
                           * float(self.cfg.temperature) * dt_t)
 
 
-def effective_eta(cfg):
-    """eta, optionally rescaled so steering authority is comparable ACROSS LENGTHS.
-
-    **[measured]** at fixed eta the steering-to-base drift ratio follows 1/L almost exactly --
-    relative to L=50 it is 1.000 / 0.538 / 0.313 / 0.263 / 0.225 at L = 50/100/150/200/250,
-    against the 1/L law's 1.000 / 0.500 / 0.333 / 0.250 / 0.200. So one eta is five different
-    effective strengths, and the gamma campaign's cross-length comparison was confounded.
-
-    `eta_ref_len` is the length at which `eta` means what it says; eta scales linearly in L
-    away from it. null keeps the raw eta, which is what every result on disk used.
-
-    NOT done by renormalising the feature map instead. The obvious fix -- dividing
-    SoftContactFeatures by sqrt(active pairs) rather than sqrt(|J|), since contacts are O(L)
-    while |J| is O(L^2) -- is provably inert: rescaling the features by c rescales every
-    distance by c, and `calibrate_bandwidth` sets h = sqrt(median d2), so h rescales by the same
-    c and exp(-d^2/h^2) is unchanged. **[measured]** h'/h = 2.238010 against a predicted c of
-    2.238010 at L=50 and 4.300300 / 4.300300 at L=250, with psi identical to 1e-7. The divisor
-    cancels; only eta is left to carry the length correction.
-    """
-    ref = cfg.get("eta_ref_len")
-    if not ref:
-        return cfg["eta"]
-    return cfg["eta"] * cfg["n_res"] / float(ref)
-
-
 def _table(cfg):
-    """Variant name -> the config overrides that define it."""
-    return {"native": dict(lam=0.0), "A": dict(lam=effective_eta(cfg))}
+    """Variant name -> its config overrides. The single definition of what a variant IS, which
+    is why test_steer_a builds every one of them through mk_cfg from here."""
+    return {"native": dict(lam=0.0), "A": dict(lam=cfg["eta"])}
 
 
 def mk_cfg(cfg, cls=ConfigA, **extra):

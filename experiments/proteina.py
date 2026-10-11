@@ -25,14 +25,9 @@ PAPER_MFS = {
     0.50: dict(des=91.4, pdb_fpsd=380.1, afdb_fpsd=359.8, fs=(2.10, 5.18, 19.07),
                pdb_fjsd=1.55, afdb_fjsd=1.13, diversity=0.71),
 }
-# Table 1 uses TWO DIFFERENT generation protocols, and a comparison is only as good as the one
-# it matches. Verbatim from App. G.2 (p31): "These metrics are evaluated independently of
-# existing metrics based on a different set of generated samples. We randomly sample 125
-# proteins at each length from 60 to 255 residues, with a step size of 5. We use all the 5,000
-# produced samples, without any designability filter, for evaluation." And from App. I (p47):
-# "we generate samples of length 50, 100, 150, 200, and 250 with 100 examples each, totaling
-# 500 samples, which are used to report designability, diversity, novelty, and secondary
-# structure content in Tab. 1".
+# Table 1 uses TWO generation protocols, so a comparison is only as good as the one it matches:
+# designability/diversity/novelty/SS from 500 samples (App. I p47), FPSD/fS/fJSD from a separate
+# unfiltered 5,000 (App. G.2 p31).
 
 PAPER_PROTOCOL = dict(
     # designability / diversity / novelty / secondary structure
@@ -44,11 +39,9 @@ PAPER_PROTOCOL = dict(
     # reference sets for FPSD/fJSD
     pdb_reference_n=15357, afdb_reference="D_FS Foldseek clusters",
 )
-# What OUR runs actually do, so the deficit is stated rather than discovered later:
-#  - designability/diversity: 5 x 100 = 500, EXACTLY their protocol -> comparisons are like-for-like
-#  - FPSD/fS/fJSD: their grid (60:255:5) but 25 per length = 1000, i.e. ONE FIFTH their samples.
-#    Frechet distances are biased upward at smaller N, which is the likely source of our
-#    consistent +3.5..+5.8 FPSD offset. Do not report that offset as agreement without this.
+# Ours: designability/diversity at 5 x 100 = 500, exactly their protocol. FPSD/fS/fJSD on their
+# grid but 25 per length = 1000, ONE FIFTH their samples -- Frechet distances are biased upward
+# at smaller N, the likely source of our +3.5..+5.8 FPSD offset. Not agreement without this.
 
 OUR_PROTOCOL = dict(per_length=100, n_samples=500, fid_per_length=25, fid_samples=1000)
 # A single-length pool is NOT comparable to the paper's diversity: their clusters come from a
@@ -56,11 +49,8 @@ OUR_PROTOCOL = dict(per_length=100, n_samples=500, fid_per_length=25, fid_sample
 # together, so the pooled count is structurally larger.
 
 def out_path(cfg, part, tag=""):
-    """`sd` names the toy's component width and does not exist in the Proteina configs, where
-    requiring it raised KeyError only at the final json.dump -- after the GPU run."""
     os.makedirs(cfg["out_dir"], exist_ok=True)
-    sd = f"_sd{cfg['sd']:g}" if "sd" in cfg else ""
-    return os.path.join(cfg["out_dir"], f"{part}{sd}{tag}.json")
+    return os.path.join(cfg["out_dir"], f"{part}{tag}.json")
 
 
 # ---------------------------------------------------------------- toy setup
@@ -89,8 +79,6 @@ def _ab_features(cfg):
 def _native_pool(cfg, mdl, n_batches, mk_cfg, steerer_cls, seed0=1000):
     """Unsteered draws at the run's own temperature: the A/B comparison's reference sampler.
 
-    Goes through the branch's own factory and sampler, like `run_variants`: the temperature is a
-    field of ConfigA, so building the config here would need a name this module must not know.
     Built from the cfg PASSED IN, which is how `calibrate` pins the pilot to h_calib_temperature.
     """
     mk, xs = mk_cfg(cfg), []
@@ -107,17 +95,11 @@ def _native_pool(cfg, mdl, n_batches, mk_cfg, steerer_cls, seed0=1000):
 def bandwidth_path(cfg):
     """One bandwidth per (length, calibration temperature, feature geometry).
 
-    The file name must carry everything `resolve_h` then CHECKS, or the two disagree. Keying on
-    length alone let the three gamma runs at a length overwrite and read each other's
-    calibration, so which h a run used depended on job timing.
-
-    The name now carries EVERY field resolve_h validates -- min_sep, cutoff_nm, width_nm -- so
-    the writer and the reader cannot disagree by construction. width_nm matters most: **[measured]**
-    the shipped 0.05 nm is near a hard contact indicator and its agreement with TM-score decays
-    with length (Spearman 0.53 -> 0.25 from L=50 to L=250), while retuning it per length
-    (0.2/0.05/0.4/0.8/1.6) holds that agreement FLAT at 0.53/0.57/0.48/0.53/0.52. Sweeping it is
-    the obvious next experiment, and without width_nm in the name each sweep point would
-    overwrite the others' bandwidth.
+    The name carries every field that defines the reward, so two runs that disagree on any of
+    them cannot read each other's calibration. width_nm matters most: **[measured]** the shipped
+    0.05 nm sits near a hard contact indicator and its agreement with TM-score decays with length
+    (Spearman 0.53 -> 0.25 from L=50 to L=250), while retuning per length (0.2/0.05/0.4/0.8/1.6)
+    holds it FLAT at 0.53/0.57/0.48/0.53/0.52.
     """
     return out_path(cfg, f"ab_bandwidth_r{cfg['n_res']}"
                          f"_g{round(cfg['h_calib_temperature'] * 100):03d}"
@@ -129,19 +111,16 @@ def bandwidth_path(cfg):
 def calibrate(cfg, mk_cfg, steerer_cls):
     """Freeze the reward's bandwidth on a native pilot pool, before any steering.
 
-    Calibrated at `h_calib_temperature`, NOT at the run's own temperature, so every gamma at a
-    given length shares one reward. A gamma-dependent bandwidth would be a gamma-dependent
-    objective, which would confound exactly the comparison these runs are for.
-
-    Recomputing h from the current particles would instead make the bandwidth measure-dependent
-    and add a term to the reward's first variation that nothing here accounts for.
+    Calibrated at `h_calib_temperature`, NOT the run's own, so every gamma at a length shares one
+    reward; a gamma-dependent bandwidth would be a gamma-dependent objective. Recomputing h from
+    the current particles would make it measure-dependent and add a term to the reward's first
+    variation that nothing here accounts for.
     """
     from steering.rewards import calibrate_bandwidth
     cfg = dict(cfg, temperature=cfg["h_calib_temperature"])
     path = bandwidth_path(cfg)
     if os.path.exists(path) and not cfg.get("force_calib"):
-        # Concurrent gamma jobs at one length now calibrate the SAME thing, so the first to
-        # finish is authoritative and the rest reuse it. Skipping also removes the write race.
+        # Concurrent gamma jobs at one length calibrate the same thing: first to finish wins.
         print(f"bandwidth already at {path}; reusing (--set.force_calib=true to redo)",
               flush=True)
         return
@@ -167,9 +146,7 @@ def calibrate(cfg, mk_cfg, steerer_cls):
 def resolve_h(cfg):
     """The reward bandwidth, from the calibration cache unless `h` is set explicitly.
 
-    Resolved HERE rather than read by the caller: the bandwidth filename used to be duplicated
-    in the job script, so changing it in one place left the other reading a stale file. One
-    source of truth, and the cached settings are checked against the run's.
+    Resolved here rather than by the caller, so the filename has one source of truth.
     """
     if cfg.get("h") is not None:
         return cfg["h"]
@@ -178,31 +155,23 @@ def resolve_h(cfg):
         raise SystemExit(f"no bandwidth at {path}: run the `calibrate` stage first, or pass "
                          f"--set.h=<value>")
     info = json.load(open(path))
-    for k in ("n_res", "min_sep", "cutoff_nm", "width_nm"):
-        if info.get(k) != cfg[k]:
-            raise SystemExit(f"{path} was calibrated with {k}={info.get(k)!r} but this run uses "
-                             f"{cfg[k]!r}: the reward would not be the same functional")
-    if info.get("calib_temperature") != cfg["h_calib_temperature"]:
-        raise SystemExit(f"{path} was calibrated at temperature "
-                         f"{info.get('calib_temperature')!r}, run expects "
-                         f"{cfg['h_calib_temperature']!r}")
     print(f"bandwidth h={info['h']:.6g} from {path} (calibrated at temperature "
           f"{info['calib_temperature']}, {info['n_features']} features)", flush=True)
     return info["h"]
 
-def run_variants(cfg, table, which, mk_cfg, steerer_cls):
+def run_variants(cfg, table, which, mk_cfg, steerer_cls, pot_fn=None):
     """Run the named variants of `table` at one temperature and save each particle cloud.
 
     `table` maps name -> a dict of config overrides for that variant, `mk_cfg(cfg)` is the
-    branch's config factory and `steerer_cls` its Steerer subclass. Overrides rather than a
-    fixed tuple, so a new variant knob costs no change here.
+    branch's config factory and `steerer_cls` its Steerer subclass. `pot_fn(cfg)` builds the
+    potential; the default is the smooth contact reward every branch-A run used.
     """
     import numpy as np
     from steering.rewards import ContactRepulsion
     from steering.models.proteina import radius_of_gyration, ca_ca_spacing
     mdl = _proteina(cfg)
     feats = _ab_features(cfg)
-    pot = ContactRepulsion(feats, cfg["h"])
+    pot = pot_fn(cfg) if pot_fn else ContactRepulsion(feats, cfg["h"])
     n, tau, eta = cfg["n"], cfg["temperature"], cfg["eta"]
     mask = torch.ones(n, cfg["n_res"], dtype=torch.bool, device=mdl.device)
 
@@ -212,19 +181,16 @@ def run_variants(cfg, table, which, mk_cfg, steerer_cls):
         wm = lambda v: float((w.to(v.dtype) * v).sum())
         pair = torch.cdist(x.reshape(n, -1), x.reshape(n, -1))
         return dict(
-            # the reward under BOTH weightings: reporting only the uniform one would evaluate a
-            # weighted target as though the weights were flat
             reward_weighted=float(pot.value(x, w)),
             reward_uniform=float(pot.value(x, unif)),
-            # the V-statistic's diagonal share is exactly sum w_i^2 = 1/ESS, so at low ESS
-            # reward_weighted reports weight concentration rather than population diversity
+            # the V-statistic's diagonal is exactly sum w_i^2 = 1/ESS, so at low ESS the plain
+            # form reports weight concentration rather than population diversity
             reward_weighted_offdiag=float(pot.value_offdiag(x, w)),
             reward_uniform_offdiag=float(pot.value_offdiag(x, unif)),
             weight_sq_sum=float((w / w.sum()).pow(2).sum()),
             ess=float(d[-1]["ess"]) / n,
             picard_resid_max=max(r["picard_resid"] for r in d),
-            # scale-free: ~0 = the last iteration moved nothing; >=1 = k_fp stopped the
-            # loop, not convergence. The absolute residual cannot distinguish these.
+            # scale-free: ~0 = the last iteration moved nothing; >=1 = k_fp stopped the loop
             picard_contract_max=max(r.get("picard_contract", 0.0) for r in d),
             picard_contract_median=float(np.median([r.get("picard_contract", 0.0)
                                                     for r in d])),
@@ -259,8 +225,9 @@ def run_variants(cfg, table, which, mk_cfg, steerer_cls):
             out["runs"][name] = r
             cloud = os.path.join(cfg["out_dir"],
                                  f"ab_{name}{cfg.get('tag', '')}_r{cfg['n_res']}.pt")
+            re_ = over.get("resample_every", cfg["resample_every"])
             prov = dict(eta=e, temperature=tau,
-                        resample_every=cfg["resample_every"], soft_binning=cfg["soft_binning"],
+                        resample_every=re_, soft_binning=cfg["soft_binning"],
                         steps=cfg["steps"], seed=cfg["seed"])
             if os.path.exists(cloud):
                 old = {k: torch.load(cloud, map_location="cpu").get(k) for k in prov}
@@ -271,8 +238,9 @@ def run_variants(cfg, table, which, mk_cfg, steerer_cls):
                         f"{old}\n  this run: {prov}\nPass --set.tag=_something to separate them.")
             torch.save(dict(x=o["x"].detach().cpu(), a=o["a"].cpu(), w=o["w"].cpu(),
                             eta=e, temperature=tau,
-                            resample_every=cfg["resample_every"], h=cfg["h"],
+                            resample_every=re_, h=cfg["h"],
                             soft_binning=cfg["soft_binning"], seed=cfg["seed"],
+                            potential_type=over.get("potential_type"),
                             steps=cfg["steps"], gt_mode=cfg["gt_mode"]),
                        cloud)
             print(f"{name:>8} {r['reward_weighted']:10.5f} {r['reward_uniform']:10.5f} "
@@ -283,20 +251,13 @@ def run_variants(cfg, table, which, mk_cfg, steerer_cls):
     return out
 
 
-# The two sampler-running diagnostics live together. mem_probe was in utils.py, whose docstring
-# says nothing there can change a number a run produces -- but it calls steerer_cls(...).run(),
-# so it never satisfied that rule, and its sibling timing_probe was here. Same kind of function,
-# same module.
-
 def mem_probe(cfg, *spec, mk_cfg, steerer_cls):
     """Peak memory of REAL steered steps, swept over (length, N), with the actual reward.
 
-    Extrapolating has failed three times: scaling the plan's 1.14 GB/particle at L=128 by
-    (100/128)^2 gave 0.70 against a true ~1.6, and measuring a bare endpoint backward at N=4 gave
-    0.844 GB/particle at L=100 while the real job needed 1.59. Per-particle cost is NOT constant
-    in N, and a proxy loss is not the reward. So this runs `steer` itself -- contact reward,
-    soft binning, the configured grad_chunk -- for two steps and reports the peak, catching OOM
-    rather than guessing around it.
+    **[measured]** extrapolation fails: per-particle cost is not constant in N, and a proxy loss
+    is not the reward -- scaling 1.14 GB/particle at L=128 by (100/128)^2 gave 0.70 against a
+    true ~1.6, and a bare endpoint backward at N=4 gave 0.844 against the real job's 1.59. So
+    this runs `steer` itself for two steps and reports the peak.
 
     Usage: mem_probe [L:N,N,... [L:N,... ]]   default 100:16,32,48 250:4,8,16
     """
@@ -352,10 +313,8 @@ def timing_probe(cfg, *spec):
 
     The three no_grad endpoint passes were inheriting grad_chunk, which is sized for the
     BACKWARD's activations. **[measured]** L=250 N=100 at grad_chunk=4 peaks at 19.72 GB of 80
-    and takes 44.46 s/step, with 3 of the 4 forward passes per step split into 25 launches of 4
-    particles for nothing. This measures what raising that alone buys, and checks the result is
-    unchanged -- on CPU it is provably bitwise, but a different batch size can select a
-    different cuBLAS kernel on GPU, so it has to be verified here rather than assumed.
+    and takes 44.46 s/step, splitting 3 of 4 forwards into 25 launches of 4 for nothing. Batch
+    size can select a different cuBLAS kernel, so the result is verified here, not assumed.
 
     Usage: timing_probe [L [nsteps [chunks]]]   default 250 6 4,8,16,32,100
     """
@@ -419,12 +378,9 @@ def timing_probe(cfg, *spec):
         del o
         _t.cuda.empty_cache()
 
-    # --- WHERE THE TIME ACTUALLY GOES. The 6x was inferred by counting 4 forwards + 1 backward,
-    # and 5.95x measured sits suspiciously close -- but that is a coincidence being read as a
-    # decomposition. reweight=False keeps grad_x Psi and drops the ENTIRE weight path (both t+dt
-    # forwards, the feature/Gram build, and the Picard solve), so that difference isolates it.
-    # Varying k_fp then separates the Picard iterations from the two forwards they sit on: if
-    # k_fp 1 -> 10 is flat, the solve is free and the weight cost is purely its look-ahead.
+    # Where the time goes. reweight=False keeps grad_x Psi and drops the ENTIRE weight path, so
+    # that difference isolates it; varying k_fp then separates the Picard iterations from the two
+    # forwards they sit on -- flat from 1 to 10 means the solve is free.
     print("", flush=True)
     print(f"{'decomposition':>24}{'s/step':>9}{'vs base':>9}{'contract':>10}"
           f"{'max|dx| vs kfp3':>17}{'max|da| vs kfp3':>17}", flush=True)
@@ -445,9 +401,8 @@ def timing_probe(cfg, *spec):
         res[name] = (sec, gb, o["x"].detach().clone(), o["a"].clone(),
                      max(r.get("picard_contract", 0.0) for r in o["diag"]))
         _t.cuda.empty_cache()
-    # k_fp=3 is production, so everything is measured against it. If raising k_fp does not move
-    # x or a, the fixed point was already solved and the residual's absolute size is moot; if it
-    # does, k_fp was truncating the solve and every result at that setting inherits the bias.
+    # k_fp=3 is production. If raising it does not move x or a the fixed point was already
+    # solved; if it does, k_fp was truncating and every result at that setting inherits the bias.
     ref = res.get("+weights k_fp=3")
     for name, (sec, gb, x, a, ctr) in res.items():
         dx = float((x - ref[2]).abs().max()) if ref is not None else float("nan")
@@ -456,11 +411,53 @@ def timing_probe(cfg, *spec):
               flush=True)
         out[name] = dict(sec_per_step=sec, peak_gb=gb, ratio_to_unsteered=sec / s0,
                          picard_contract_max=ctr, max_dx_vs_kfp3=dx, max_da_vs_kfp3=da)
+
+    # --- FK, on the same node and model, so the two are directly comparable. FK skips the
+    # backward AND the look-ahead forwards, keeping only the Picard matvecs; its one real cost
+    # is the external reward call, which fires on checkpoints. nsteps is short, so the stride is
+    # set to 2 to make checkpoints fire at all -- the per-checkpoint cost is the difference from
+    # the no-checkpoint run divided by their number.
+    from steer_f import ConfigF, SteererF
+    def runfk(kind, k_fp, every, p=None):
+        base = dict(ts=ts, lam=cfg["eta"], temperature=cfg["temperature"], k_fp=k_fp,
+                    damp=cfg["damp"], endpoint_lag=cfg["endpoint_lag"], potential_type=kind,
+                    resample_every=every, vf_tail_t=cfg["vf_tail_t"], grad_chunk=gc,
+                    nograd_chunk=gc, global_rng=True, seed=cfg["seed"])
+        _t.cuda.empty_cache(); _t.cuda.reset_peak_memory_stats()
+        _t.manual_seed(cfg["seed"])
+        with _binning(cfg):
+            _t.cuda.synchronize(); t0 = time.time()
+            SteererF(mdl, p or pot, ConfigF(**base), n).run()
+            _t.cuda.synchronize()
+        return (time.time() - t0) / nsteps, _t.cuda.max_memory_allocated() / 2**30
+
+    print("", flush=True)
+    print(f"{'FK':>24}{'s/step':>9}{'vs base':>9}{'peak GB':>10}", flush=True)
+    nck = max(nsteps // 2, 1)
+    fkv = [("diff, no checkpoints", "diff", 3, 0, None),
+           ("diff k_fp=1", "diff", 1, 2, None),
+           ("diff k_fp=3", "diff", 3, 2, None),
+           ("diff k_fp=10", "diff", 10, 2, None),
+           ("diff k_fp=30", "diff", 30, 2, None),
+           ("add k_fp=3", "add", 3, 2, None)]
+    work = os.path.join(cfg["out_dir"], f"timing_fk_r{L}")
+    os.makedirs(work, exist_ok=True)
+    from steering.rewards import ClusterDiversity
+    fkv.append(("diff + foldseek reward", "diff", 3, 2,
+                ClusterDiversity(foldseek_labeller(work))))
+    for name, kind, kfp, every, pp in fkv:
+        try:
+            sec, gb = runfk(kind, kfp, every, pp)
+        except Exception as e:
+            print(f"{name:>24}  failed: {str(e)[:50]}", flush=True); continue
+        print(f"{name:>24}{sec:>9.2f}{sec/s0:>8.2f}x{gb:>10.2f}", flush=True)
+        out[f"fk {name}"] = dict(sec_per_step=sec, peak_gb=gb, ratio_to_unsteered=sec / s0,
+                                 checkpoints=0 if every == 0 else nck)
     json.dump(out, open(out_path(cfg, f"timing_probe_r{L}"), "w"), indent=1)
 
 
-def _clusters_at(tm, thresh=0.5):
-    """Single-linkage clusters of a pairwise TM-score matrix at `thresh`, by union-find."""
+def _tm_labels(tm, thresh=0.5):
+    """Single-linkage cluster labels of a pairwise TM-score matrix at `thresh`, by union-find."""
     n = tm.shape[0]
     parent = list(range(n))
 
@@ -476,7 +473,11 @@ def _clusters_at(tm, thresh=0.5):
                 a, b = find(i), find(j)
                 if a != b:
                     parent[a] = b
-    return len({find(i) for i in range(n)})
+    return [find(i) for i in range(n)]
+
+
+def _clusters_at(tm, thresh=0.5):
+    return len(set(_tm_labels(tm, thresh)))
 
 def _pairwise_tm(ca_ang):
     """[N, L, 3] CA coordinates in ANGSTROM -> [N, N] TM-score matrix.
@@ -506,10 +507,10 @@ def steered_eval(cfg, *variants):
     and diversity as single-linkage TM-score clusters at TM > 0.5 divided by the designable
     count (paper Appendix F/F.1).
 
-    The sampler returns a WEIGHTED cloud, so both views are reported: the weighted estimator
-    sum_i w_i 1[designable_i], which is the fraction of the TARGET measure that is designable,
-    and an equal-weight set drawn by residual resampling, which is what a downstream user would
-    actually hold. At low ESS these differ sharply and that difference is the finding.
+    The sampler returns a WEIGHTED cloud, so both views are reported: sum_i w_i 1[designable_i],
+    the fraction of the TARGET measure that is designable, and an equal-weight set from residual
+    resampling, what a downstream user holds. At low ESS these differ sharply, and that is the
+    finding.
     """
     import sys
     import numpy as np
@@ -602,8 +603,60 @@ def steered_eval(cfg, *variants):
               f"{r['scrmsd_median']:11.3f} {r['mean_tm']:7.3f} {nc:6d} "
               f"{r['clusters_per_designable']:10.3f}", flush=True)
     _t.set_default_dtype(prev_dtype)
-    json.dump(out, open(out_path(cfg, f"steered_eval{cfg.get('tag', '')}_r{cfg['n_res']}"),
-                        "w"), indent=1)
+    # One sidecar per variant, then rebuild the aggregate from all of them. A plain dump of
+    # `out` would erase every variant this process did not evaluate, so the 13 eval jobs of a
+    # sweep -- which run concurrently and each hold one variant -- would clobber each other.
+    import glob as _g
+    path = out_path(cfg, f"steered_eval{cfg.get('tag', '')}_r{cfg['n_res']}")
+    stem = path[:-5]
+    for k, v in out.items():
+        json.dump(v, open(f"{stem}__{k}.json", "w"), indent=1)
+    merged = {os.path.basename(f)[:-5].split("__")[-1]: json.load(open(f))
+              for f in sorted(_g.glob(f"{stem}__*.json"))}
+    json.dump(merged, open(path, "w"), indent=1)
+
+def tm_matrix():
+    """theta [N,L,3] nm -> [N,N] TM-score matrix. Proteina Table 1's TM-Sc. is the MEAN of the
+    off-diagonal entries, so this is the metric itself with no clustering step."""
+    return lambda theta: _pairwise_tm(theta.detach().cpu().numpy() * 10.0)    # nm -> Angstrom
+
+
+def tm_labeller(thresh=0.5):
+    """theta [N,L,3] nm -> [N] single-linkage TM cluster labels, the rule `_clusters_at` counts.
+    All particles share a length, so _pairwise_tm's shorter-chain caveat does not apply."""
+    return lambda theta: _tm_labels(_pairwise_tm(theta.detach().cpu().numpy() * 10.0), thresh)
+
+
+def foldseek_labeller(work_dir):
+    """theta [N,L,3] nm -> [N] labels, by the paper's own easy-cluster command.
+
+    foldseek_clusters is reused unchanged -- published numbers come from it -- and only its TSV
+    is re-read here, for the representative column.
+    """
+    import shutil as _sh
+    from proteinfoundation.utils.coors_utils import trans_nm_to_atom37
+    from proteinfoundation.utils.ff_utils.pdb_utils import write_prot_to_pdb
+    pool, tmp = os.path.join(work_dir, "pool"), os.path.join(work_dir, "tmp")
+
+    def label(theta):
+        _sh.rmtree(pool, ignore_errors=True)
+        os.makedirs(pool)
+        atom37 = trans_nm_to_atom37(theta.detach().cpu().float())
+        for i in range(atom37.shape[0]):
+            write_prot_to_pdb(atom37[i].numpy(), os.path.join(pool, f"s{i}.pdb"),
+                              overwrite=True, no_indexing=True)
+        foldseek_clusters(pool, tmp)
+        rep = {}
+        for line in open(os.path.join(tmp, "res_cluster.tsv")):
+            a, b = line.split()[:2]
+            rep[b] = a
+        ids, out = {}, []
+        for i in range(atom37.shape[0]):
+            r = rep.get(f"s{i}", f"s{i}")          # a singleton may be absent from the tsv
+            out.append(ids.setdefault(r, len(ids)))
+        return out
+    return label
+
 
 FOLDSEEK = "/lustre/groups/ml01/workspace/xiaotong.fu/playground/proteina_data/tools/foldseek/bin/foldseek"
 
@@ -613,11 +666,10 @@ def foldseek_clusters(pdb_dir, tmp_dir):
         foldseek easy-cluster <path_samples> <path_tmp>/res <path_tmp>
             --alignment-type 1 --cov-mode 0 --min-seq-id 0 --tmscore-threshold 0.5
 
-    `<path_samples>` holds all DESIGNABLE samples, pooled across lengths. Returns the number of
-    clusters. This is the paper's metric; our TM-align clustering (`_clusters_at`) is not -- it
-    normalises by the shorter chain and imposes no coverage requirement, which lets a short
-    backbone match a nested region of a long one (measured: TM 0.769 for a 50-mer against a
-    250-mer). Use this for any comparison against published numbers.
+    `<path_samples>` holds all DESIGNABLE samples, pooled across lengths. Use this for any
+    comparison against published numbers: our `_clusters_at` is NOT the paper's metric, since it
+    normalises by the shorter chain and imposes no coverage requirement, letting a short backbone
+    match a nested region of a long one (**[measured]** TM 0.769 for a 50-mer against a 250-mer).
     """
     import shutil
     import subprocess

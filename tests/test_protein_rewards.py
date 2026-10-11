@@ -278,3 +278,46 @@ def test_a_stronger_reward_raises_the_weighted_diversity():
     vals = [float(pot.value(o["x"].detach(), o["w"]))
             for o in (_steered(0.0), _steered(2.0), _steered(8.0))]
     assert vals[0] < vals[1] < vals[2], f"reward did not increase with eta: {vals}"
+
+
+# ---- ClusterDiversity: the non-differentiable reward FK makes reachable --------------------
+
+def _cd(labels):
+    from steering.rewards import ClusterDiversity
+    return ClusterDiversity(lambda theta: labels)
+
+
+LABELS = [0, 0, 0, 1, 1, 2]          # masses 3/6, 2/6, 1/6 -> R = -14/36, Hill-2 = 18/7
+
+
+def test_cluster_diversity_value_is_minus_sum_of_squared_masses():
+    pot, w = _cd(LABELS), torch.full((N,), 1.0 / N)
+    assert abs(float(pot.value(_pool(), w)) + 14.0 / 36.0) < 1e-12
+
+
+def test_psi_is_the_first_variation_of_value():
+    """R(mu) = -int int s dmu dmu is quadratic, so int psi dmu = 2R exactly. This is the identity
+    the mean-field weights and FK's self-consistent solve both rely on."""
+    pot, theta = _cd(LABELS), _pool()
+    w = torch.rand(N).double(); w /= w.sum()
+    assert abs(float((w * pot.psi(theta, theta, w)).sum())
+               - 2.0 * float(pot.value(theta, w))) < 1e-12
+
+
+@pytest.mark.parametrize("device", ["cpu"] + (["cuda"] if torch.cuda.is_available() else []))
+def test_psi_lands_on_the_particles_device(device):
+    """labels() returns CPU ints whatever the particles are on -- a Python list from foldseek or
+    tmtools. The co-cluster matrix must follow the particles, or every downstream weight is a
+    silent CPU round-trip that then fails against a CUDA r_prev."""
+    pot, theta = _cd(LABELS), _pool().to(device)
+    w = torch.full((N,), 1.0 / N, device=device, dtype=theta.dtype)
+    assert pot.psi(theta, theta, w).device.type == device
+    assert pot.weights_fn(theta, theta)(w).device.type == device
+
+
+def test_psi_is_bounded_and_ranks_crowded_particles_lowest():
+    """psi in [-2, 0] is what makes the fixed point stable; the ordering is what steering uses."""
+    pot, theta = _cd(LABELS), _pool()
+    psi = pot.psi(theta, theta, torch.full((N,), 1.0 / N))
+    assert float(psi.max()) <= 0.0 and float(psi.min()) >= -2.0
+    assert float(psi[0]) < float(psi[3]) < float(psi[5])    # cluster sizes 3 > 2 > 1

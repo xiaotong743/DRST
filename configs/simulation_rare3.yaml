@@ -1,0 +1,47 @@
+# p1 = 0.05 N(-1) + 0.95 N(+1), nu = 0.95 N(-3) + 0.05 N(-1): nu's mass is where p1 has NONE.
+# Shares the rare checkpoint, since p1 is unchanged from simulation_rare.yaml.
+torch_dtype: float64
+device: cpu            # "cuda" for the sweeps; the bitwise gate must stay cpu
+out_dir: experiments/out
+ckpt: experiments/trained_flow_sd0.5_rare.pt
+
+sd: 0.5                 # "unit variance" is the mixture's: sd^2 + 0.75 = 1
+means: [-1.0, 1.0]
+p1_weights: [0.05, 0.95]   # the left mode is RARE in the base, so the tilt must
+                           # move mass into a mode p1 barely samples
+nu_weights: [0.95, 0.05]
+                           # measures overlap ONLY in each other's rare component
+nu_means: [-3.0, -1.0]  # nu sits mostly at -3, OFF both of p1's modes; its 5% component
+                        # is the only part overlapping p1 at all, and that on p1's rare mode
+xlim: 5.0
+nu_samples: 1000
+nu_seed: 1
+
+h: 7.0710678118654755   # "bandwidth 5.0" = sigma in exp(-d^2/2 sigma^2), so h = 5*sqrt(2)
+lam_star: 30.0          # probe: mu* left mass 0.925 vs p1 0.071, residual 4.5e-17.
+                        # Monotone to lam=50 here, so no branch-switch risk: nu is off p1 modes.
+kl_bw: 0.2
+
+n: 4000
+steps: 100
+seeds: [4, 5, 6]
+jstar_seeds: 6
+fig_tag: "_rare3"
+fig2_seed: 4
+record_traj: 600
+resample_fig2: 34
+resample_fig3: 10
+converged_damp: 0.5     # the converged reference curve only; K_FP = 1,3,5 run undamped
+eps_clamp: 20.0
+
+lams: [0.0, 2.0, 4.0, 6.0, 8.0, 10.0, 12.0, 14.0, 16.0, 18.0, 20.0]
+p04_range: 4.0          # Figure 3's caption: baseline strength swept over [0,4]
+
+width: 256
+train_steps: 20000
+train_batch: 8192
+train_lr: 0.002
+
+pool_n: [40, 100]
+pool_M: [2, 4, 8]
+pool_seeds: 8
