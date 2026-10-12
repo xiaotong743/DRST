@@ -113,17 +113,20 @@ def test_resampling_moves_the_population_toward_high_reward():
 
 @pytest.mark.parametrize("kind", ["diff", "max", "add", "rt"])
 def test_fk_weights_is_the_potential_it_claims(kind):
-    """The arithmetic of one step, against the definitions written out by hand."""
+    """One checkpoint against fkd_class.py:111-121: every type adds its FULL log G_t to `a`.
+
+    The earlier version asserted `lam*g - logP`, i.e. resampled on the increment of the running
+    max/sum. That is a valid FK model but not the paper's Max and Sum.
+    """
     r = torch.tensor([0.5, -1.0, 2.0], dtype=torch.float64)
     prev = torch.tensor([1.0, -2.0, 0.0], dtype=torch.float64)
     a = torch.tensor([0.1, 0.2, 0.3], dtype=torch.float64)
-    logP = torch.tensor([0.7, 0.0, -0.4], dtype=torch.float64)
-    got, new_prev = log_potential(kind, 2.0, r, a, prev, logP)
+    got, new_prev = log_potential(kind, 2.0, r, a, prev)
     if kind == "diff":
         assert torch.allclose(got, a + 2.0 * (r - prev)) and torch.equal(new_prev, r)
     else:
         g = {"max": torch.maximum(r, prev), "add": r + prev, "rt": r}[kind]
-        assert torch.allclose(got, 2.0 * g - logP) and torch.allclose(new_prev, g)
+        assert torch.allclose(got, a + 2.0 * g) and torch.allclose(new_prev, g)
 
 
 def test_the_reward_is_never_differentiated():

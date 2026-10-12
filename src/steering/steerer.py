@@ -50,6 +50,8 @@ class Config:
     k_fp: int = 50
     damp: float = 0.5                 # k_fp=1 needs damp=1.0
     resample_every: int = 10          # 0 disables
+    resample_start: int = 0           # fkd_class.py's resampling_t_start/t_end: the window the
+    resample_end: int | None = None   # stride runs over. None = to the last step.
     increment_clip: float | None = None
     reweight: bool = True             # False -> gradient-only steering (the paper's baseline)
     steer_coeff: float | None = None  # replaces eps_t on grad_x Psi. None = eq (11)/(12a).
@@ -114,7 +116,9 @@ class Steerer:
     def checkpoint(self, k, diffusing):
         """Steps where _resample fires. FK reads the reward on exactly these."""
         cfg = self.cfg
-        return bool(cfg.resample_every and diffusing and (k + 1) % cfg.resample_every == 0)
+        end = cfg.nsteps if cfg.resample_end is None else cfg.resample_end
+        return bool(cfg.resample_every and diffusing and (k + 1) % cfg.resample_every == 0
+                    and cfg.resample_start <= k + 1 <= end)
 
     def noise_std(self, t_val, dt_t):
         g, _ = self.coeffs(t_val)
@@ -346,10 +350,11 @@ def multibatch(model, potential, cfg, n_particles, n_batches, device="cpu"):
 POTENTIALS = ("diff", "max", "add", "rt", "is")
 
 
-def log_potential(kind, lam, r, a, r_prev, logP):
-    """One FK step. Returns (a, r_prev).
+def log_potential(kind, lam, r, a, r_prev):
+    """One FK checkpoint. Returns (a, r_prev): a gains this checkpoint's log G_t in full.
 
-    `diff` is an increment; the others are cumulative and subtract `logP`, what resampling paid.
+    As Algorithm 1 and fkd_class.py:111-121: max/add resample on the running max/sum itself,
+    not its increment. `finalise` then sets lam*r(x1) - logP, which is G_0 = exp(lam r)/prod G_t.
     """
     if kind == "diff":
         return a + lam * (r - r_prev), r
@@ -363,13 +368,13 @@ def log_potential(kind, lam, r, a, r_prev, logP):
         r_prev = r
     else:
         raise ValueError(f"potential_type={kind!r}; use one of {POTENTIALS}")
-    return lam * r_prev - logP, r_prev
+    return a + lam * r_prev, r_prev
 
 
 @dataclass
 class FKConfig(Config):
     potential_type: str = "diff"      # one of POTENTIALS
-    reward_min_value: float = 0.0     # r_prev seed; only "max" is sensitive to it
+    reward_min_value: float | None = None   # r_prev seed; None = -inf for max, else 0
 
 
 class FKSteerer(Steerer):
@@ -379,14 +384,12 @@ class FKSteerer(Steerer):
     a = lam*r(x1) - logP, so at resample_every=0 they all collapse to SNIS.
     """
 
-    def check(self):
-        super().check()
-        if self.cfg.potential_type not in POTENTIALS:
-            raise ValueError(f"potential_type={self.cfg.potential_type!r}; use one of {POTENTIALS}")
-
     def begin(self, x, a):
         self._logP = torch.zeros_like(a)
-        self._r_prev = torch.full_like(a, self.cfg.reward_min_value)
+        seed = self.cfg.reward_min_value
+        if seed is None:                # the paper's Max has no floor; a 0 floor is inert on r <= 0
+            seed = float("-inf") if self.cfg.potential_type == "max" else 0.0
+        self._r_prev = torch.full_like(a, seed)
         # private stream, so turning FK on does not shift the Brownian sequence
         self._gen = torch.Generator(device=x.device).manual_seed(self.cfg.seed + 20_000_003)
 
@@ -394,11 +397,11 @@ class FKSteerer(Steerer):
         return self._gen
 
     def reindex(self, idx, a, x):
-        self._logP = (self._logP + a)[idx]      # ancestral, never reset
+        self._logP = (self._logP + a)[idx]     
         self._r_prev = self._r_prev[idx]
 
     def _cal_sample_gradient(self, x, t_val, sup, w_comb):
-        """FK weights the reward VALUE and never differentiates it."""
+        """Not used in FK: the potential is a function of the reward VALUE, not the measure's gradient."""
         return torch.zeros_like(x), torch.zeros(self.n, dtype=x.dtype, device=x.device)
 
     def _reward(self, x, t_val, w_comb):
@@ -411,16 +414,11 @@ class FKSteerer(Steerer):
         return theta_d, v_d, theta_d, torch.zeros(self.n, dtype=x.dtype, device=x.device)
 
     def _solve(self, a0, r_prev, f):
-        """Self-consistent weights: psi is read at the measure the weights themselves define.
-
-        Iteration 0 takes the FULL step, so a per-particle reward -- where `f` ignores its
-        argument -- lands on the fixed point in one pass and is bitwise unaffected by damping.
-        `r_prev` stays frozen; max/add would otherwise compound it once per iteration.
-        """
+        """Self-consistent weights"""
         cfg, a, resid, new_prev = self.cfg, a0, 0.0, r_prev
         for k in range(max(cfg.k_fp, 1)):
             r = f(normalise(a)).double()
-            cand, new_prev = log_potential(cfg.potential_type, cfg.lam, r, a0, r_prev, self._logP)
+            cand, new_prev = log_potential(cfg.potential_type, cfg.lam, r, a0, r_prev)
             cand = cand if k == 0 else (1 - cfg.damp) * a + cfg.damp * cand
             resid = float((cand - a).abs().max())
             a = cand

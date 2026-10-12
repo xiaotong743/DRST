@@ -4,16 +4,35 @@ Meanfiled the 1-D toy
 import json
 import os
 import sys
+from dataclasses import dataclass
 
 import torch
 import yaml
 
 from steering.smc import normalise
 from steering.rewards import MMD
-from steering.steerer import Config, FKConfig, FKSteerer, multibatch, steer
+from steering.steerer import Config, FKConfig, FKSteerer, Steerer, multibatch, steer
 
-from .toy import (GaussianMixtureFlow, TrainedFlow, grid_mu_star, objective_paper,
+from .toy import (GaussianMixtureFlow, TrainedFlow, Visual, grid_mu_star, objective_paper,
                   sample_grid, w1_to_grid)
+
+
+@dataclass
+class VisualConfig(Config):
+    record_traj: int = 0        # watched initial particles; fig2 only
+
+
+@dataclass
+class VisualFKConfig(FKConfig):
+    record_traj: int = 0
+
+
+class VisualSteerer(Visual, Steerer):
+    """Steerer that also returns the genealogy fig2 draws."""
+
+
+class VisualFKSteerer(Visual, FKSteerer):
+    """FKSteerer that also returns the genealogy fig2 draws."""
 
 
 def out_path(cfg, part, tag=""):
@@ -108,6 +127,9 @@ def fig2(cfg):
     out = {"grid": grid.tolist(), "mu_star": q.tolist(), "sd": cfg["sd"], "h": cfg["h"], "N": n,
            "fig_tag": cfg.get("fig_tag", ""), "nu_means": cfg.get("nu_means") or cfg["means"],
            "xlim": cfg.get("xlim", 4.0), "lam_star": lam_star,
+           "resample_every": cfg["resample_fig2"], "record_traj": cfg["record_traj"],
+           "resample_start": cfg.get("resample_start", 0),
+           "resample_end": cfg.get("resample_end"),
            "nu_weights": cfg["nu_weights"], "p1_weights": cfg["p1_weights"],
            "means": cfg["means"],
            "p1": torch.softmax(base_model(cfg).log_p1(grid), 0).tolist(),
@@ -122,17 +144,18 @@ def fig2(cfg):
             "gradient": dict(lam=lam_star, reweight=False, resample_every=0),
             # same lam and the same resampling stride as mean-field, so the panels differ only
             # in how the log-weights are made: eq (12b)'s rate against a potential of the VALUE.
-            # reward_min_value stays None so `max` seeds its running max at -inf; 0.0 would make
-            # it inert against a psi that is never positive.
+            # reward_min_value stays None, so `max` seeds at -inf: the paper's Max has no floor.
             **{f"fk_{k}": dict(lam=lam_star, potential_type=k,
                                resample_every=cfg["resample_fig2"])
                for k in ("add", "diff", "max")}}
     for k, kw in runs.items():
         base = dict(nsteps=cfg["steps"], seed=cfg["fig2_seed"],
                     record_traj=cfg["record_traj"],
+                    resample_start=cfg.get("resample_start", 0),
+                    resample_end=cfg.get("resample_end"),
                     **kw)
-        o = (FKSteerer(m, pot, FKConfig(**base), n).run() if "potential_type" in kw
-             else steer(m, pot, Config(**base), n))
+        o = (VisualFKSteerer(m, pot, VisualFKConfig(**base), n).run() if "potential_type" in kw
+             else VisualSteerer(m, pot, VisualConfig(**base), n).run())
         w = o["w"] if kw.get("reweight", True) else unif
         out[f"x_{k}"], out[f"w_{k}"] = o["x"].reshape(-1).tolist(), w.reshape(-1).tolist()
         out[f"traj_{k}"], out["ts"] = o["traj"].tolist(), o["ts"].tolist()
